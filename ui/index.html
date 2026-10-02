@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- TOP: target + workspace bar -->
+  <div id="topbar">
+    <div class="brand">RED DASH</div>
+
+    <div class="field">
+      <label>VPN</label>
+      <span id="vpn-status" class="chip bad">— checking —</span>
+    </div>
+    <div class="field">
+      <label>Target IP</label>
+      <input id="in-target" placeholder="10.10.10.5">
+    </div>
+    <div class="field">
+      <label>Domain</label>
+      <input id="in-domain" placeholder="lame.htb">
+    </div>
+    <button id="btn-set-target">Set target</button>
+
+    <div class="spacer"></div>
+
+    <div class="field">
+      <label>Box</label>
+      <select id="sel-workspace"></select>
+    </div>
+    <button id="btn-new-workspace">+ New box</button>
+    <button id="btn-delete-workspace" class="ghost">Delete box</button>
+    <button id="btn-reload" class="ghost" title="Reload the whole app">⟳ Reload</button>
+  </div>
+
+  <!-- STATUS STRIP: tools + seclists -->
+  <div id="status-strip">
+    <span class="status-label">Setup:</span>
+    <span id="chips"></span>
+    <span class="spacer"></span>
+    <button id="btn-undismiss" class="mini ghost hidden">Show dismissed</button>
+    <button id="btn-recheck" class="mini ghost">Re-check</button>
+  </div>
+
+  <!-- install hint popup -->
+  <div id="hint-bar" class="hidden">
+    <span id="hint-text"></span>
+    <button id="hint-copy" class="mini">Copy command</button>
+    <button id="hint-close" class="mini ghost">Dismiss</button>
+  </div>
+
+  <!-- MIDDLE: examples | terminal | output -->
+  <div id="middle">
+    <div id="left" class="panel">
+      <div class="panel-head">
+        <span>Tool examples</span>
+        <button id="btn-add-example" class="mini">+ Add</button>
+      </div>
+      <div id="examples"></div>
+    </div>
+
+    <div id="center">
+      <div id="terminal"></div>
+    </div>
+
+    <div id="right" class="panel">
+      <div class="panel-head">
+        <span class="tabs">
+          <button id="tab-output" class="tab active">Output</button>
+          <button id="tab-notes" class="tab">Notes</button>
+          <button id="tab-loot" class="tab">Loot</button>
+        </span>
+        <button id="btn-refresh-output" class="mini">Refresh</button>
+      </div>
+      <div id="output-list"></div>
+      <div id="output-view"></div>
+      <textarea id="notes-view" class="hidden note-editor" placeholder="Notes for this box..."></textarea>
+      <textarea id="loot-view" class="hidden note-editor" placeholder="Loot / creds / flags for this box..."></textarea>
+      <div id="note-save-bar" class="hidden">
+        <button id="btn-save-note" class="mini">Save</button>
+        <span id="note-saved-msg" class="dim hidden">Saved</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- New-box popup -->
+  <div id="modal-newbox" class="hidden">
+    <div class="modal-box">
+      <h3>Name this box</h3>
+      <label>Name (e.g. htb-lame)</label>
+      <input id="newbox-name" placeholder="htb-lame">
+      <div class="modal-buttons">
+        <button id="newbox-create">Create</button>
+        <button id="newbox-cancel" class="ghost">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Delete-box confirm popup -->
+  <div id="modal-delete" class="hidden">
+    <div class="modal-box">
+      <h3>Delete this box?</h3>
+      <p id="delete-warning" class="dim"></p>
+      <div class="modal-buttons">
+        <button id="delete-confirm">Delete</button>
+        <button id="delete-cancel" class="ghost">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add-example popup -->
+  <div id="modal" class="hidden">
+    <div class="modal-box">
+      <h3>Add your own example</h3>
+      <label>Tool (nmap, ffuf, gobuster...)</label>
+      <input id="ex-tool">
+      <label>Name (short label)</label>
+      <input id="ex-name">
+      <label>Command (use {TARGET} {DOMAIN} {OUT} {WORDLIST})</label>
+      <input id="ex-cmd">
+      <label>Note (optional)</label>
+      <input id="ex-note">
+      <div class="modal-buttons">
+        <button id="ex-save">Save</button>
+        <button id="ex-cancel" class="ghost">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

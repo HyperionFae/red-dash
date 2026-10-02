@@ -1,0 +1,77 @@
+{
+  "variables": {
+    "TARGET": "Filled from the target bar (IP)",
+    "DOMAIN": "Filled from the target bar (e.g. lame.htb)",
+    "OUT": "Current box output folder",
+    "WORDLIST": "Found automatically if SecLists is installed",
+    "SUBLIST": "DNS subdomain list, found automatically",
+    "PORTS": "Comma list of open ports you found, e.g. 22,80,445",
+    "note": "<user> <pass> <hash> are placeholders you type over"
+  },
+  "examples": [
+    { "tool": "nmap", "name": "Quick scan (top 1000)", "command": "nmap -sC -sV -oA {OUT}/nmap/quick {TARGET}", "note": "Start here. -sC scripts, -sV versions" },
+    { "tool": "nmap", "name": "All ports (fast)", "command": "nmap -p- --min-rate 5000 -oA {OUT}/nmap/allports {TARGET}", "note": "Finds ports the quick scan misses" },
+    { "tool": "nmap", "name": "Deep scan on found ports", "command": "nmap -p {PORTS} -sC -sV -oA {OUT}/nmap/deep {TARGET}", "note": "Put open ports in {PORTS}" },
+    { "tool": "nmap", "name": "UDP top 20", "command": "sudo nmap -sU --top-ports 20 -oA {OUT}/nmap/udp {TARGET}", "note": "Needs sudo. Slow, keep small" },
+    { "tool": "nmap", "name": "Vuln scripts", "command": "nmap --script vuln -oA {OUT}/nmap/vuln {TARGET}", "note": "Checks known CVEs. Noisy" },
+
+    { "tool": "hosts", "name": "Add domain to /etc/hosts", "command": "echo \"{TARGET} {DOMAIN}\" | sudo tee -a /etc/hosts", "note": "Do this before any vhost search" },
+    { "tool": "hosts", "name": "Add found subdomain to /etc/hosts", "command": "echo \"{TARGET} sub.{DOMAIN}\" | sudo tee -a /etc/hosts", "note": "Replace 'sub' with each vhost ffuf/gobuster finds" },
+
+    { "tool": "gobuster", "name": "Directory search", "command": "gobuster dir -u http://{TARGET} -w {WORDLIST} -o {OUT}/gobuster/dirs.txt", "note": "Add --exclude-length if wildcard errors" },
+    { "tool": "gobuster", "name": "Dirs + extensions", "command": "gobuster dir -u http://{TARGET} -w {WORDLIST} -x php,txt,html -o {OUT}/gobuster/files.txt", "note": "Change -x to match the site" },
+    { "tool": "gobuster", "name": "Vhost search", "command": "gobuster vhost -u http://{DOMAIN} -w {SUBLIST} --append-domain -o {OUT}/gobuster/vhosts.txt", "note": "Add domain to /etc/hosts first" },
+
+    { "tool": "ffuf", "name": "Directory search", "command": "ffuf -u http://{TARGET}/FUZZ -w {WORDLIST} -ac -o {OUT}/ffuf/dirs.json -of json", "note": "FUZZ marks where words go. -ac autocalibrates out false positives" },
+    { "tool": "ffuf", "name": "Dirs (hide 404)", "command": "ffuf -u http://{TARGET}/FUZZ -w {WORDLIST} -fc 404 -ac -o {OUT}/ffuf/dirs.json -of json", "note": "-fc filters status code" },
+    { "tool": "ffuf", "name": "Vhost search", "command": "ffuf -u http://{DOMAIN} -H 'Host: FUZZ.{DOMAIN}' -w {SUBLIST} -fs 0 -ac -o {OUT}/ffuf/vhosts.json -of json", "note": "Add domain to /etc/hosts first. All same size? set -fs to that size" },
+    { "tool": "ffuf", "name": "GET parameter search", "command": "ffuf -u 'http://{TARGET}/index.php?FUZZ=test' -w {WORDLIST} -fs 0 -ac -o {OUT}/ffuf/params.json -of json", "note": "Finds hidden parameters" },
+
+    { "tool": "feroxbuster", "name": "Recursive dir search", "command": "feroxbuster -u http://{TARGET} -w {WORDLIST} -o {OUT}/feroxbuster/dirs.txt", "note": "Recurses into folders it finds" },
+
+    { "tool": "nikto", "name": "Web server scan", "command": "nikto -h http://{TARGET} -o {OUT}/nikto/scan.txt", "note": "Quick web misconfig check" },
+    { "tool": "whatweb", "name": "Fingerprint site", "command": "whatweb http://{TARGET} | tee {OUT}/whatweb/scan.txt", "note": "What tech the site runs" },
+    { "tool": "wpscan", "name": "WordPress scan", "command": "wpscan --url http://{TARGET} --enumerate u,ap,at -o {OUT}/wpscan/scan.txt", "note": "Add --api-token for CVE data" },
+
+    { "tool": "curl", "name": "Headers", "command": "curl -i http://{TARGET}", "note": "See server + redirects" },
+    { "tool": "curl", "name": "robots.txt", "command": "curl -s http://{TARGET}/robots.txt", "note": "Often leaks hidden paths" },
+
+    { "tool": "smb", "name": "List shares (null)", "command": "smbclient -L //{TARGET}/ -N", "note": "Anonymous share list" },
+    { "tool": "smb", "name": "smbmap", "command": "smbmap -H {TARGET}", "note": "Shows share permissions" },
+    { "tool": "smb", "name": "smbmap (creds)", "command": "smbmap -H {TARGET} -u <user> -p <pass>", "note": "With a username + password" },
+    { "tool": "smb", "name": "enum4linux-ng", "command": "enum4linux-ng -A {TARGET} | tee {OUT}/smb/enum.txt", "note": "Full SMB/AD enum" },
+
+    { "tool": "netexec", "name": "SMB null check", "command": "nxc smb {TARGET} -u '' -p ''", "note": "nxc = netexec (old crackmapexec)" },
+    { "tool": "netexec", "name": "SMB login", "command": "nxc smb {TARGET} -u <user> -p <pass>", "note": "+ shows if admin" },
+    { "tool": "netexec", "name": "SMB shares", "command": "nxc smb {TARGET} -u <user> -p <pass> --shares", "note": "Lists readable shares" },
+
+    { "tool": "rpc", "name": "rpcclient null", "command": "rpcclient -U \"\" -N {TARGET}", "note": "Then: enumdomusers" },
+    { "tool": "nfs", "name": "Show NFS mounts", "command": "showmount -e {TARGET}", "note": "Exported network folders" },
+    { "tool": "ldap", "name": "LDAP base info", "command": "ldapsearch -x -H ldap://{TARGET} -s base namingcontexts", "note": "Finds the AD base DN" },
+    { "tool": "snmp", "name": "snmpwalk public", "command": "snmpwalk -v2c -c public {TARGET} | tee {OUT}/snmp/walk.txt", "note": "Try community 'public'" },
+
+    { "tool": "dns", "name": "Zone transfer", "command": "dig axfr @{TARGET} {DOMAIN}", "note": "Sometimes dumps all records" },
+    { "tool": "dns", "name": "dnsrecon", "command": "dnsrecon -d {DOMAIN} -n {TARGET}", "note": "General DNS enum" },
+
+    { "tool": "git", "name": "Dump exposed .git", "command": "git-dumper http://{TARGET}/.git/ {OUT}/git-dump", "note": "Needs .git/HEAD to be publicly accessible" },
+
+    { "tool": "sqlmap", "name": "Test a parameter", "command": "sqlmap -u \"http://{TARGET}/page.php?id=1\" --batch --dbs", "note": "Change the URL + param" },
+    { "tool": "searchsploit", "name": "Search exploits", "command": "searchsploit <product version>", "note": "e.g. searchsploit vsftpd 2.3.4" },
+
+    { "tool": "hydra", "name": "SSH password spray", "command": "hydra -l <user> -P {WORDLIST} {TARGET} ssh", "note": "Swap list for rockyou if you want" },
+    { "tool": "john", "name": "Crack a hash", "command": "john --wordlist=/usr/share/wordlists/rockyou.txt hash.txt", "note": "Put the hash in hash.txt first" },
+    { "tool": "hashcat", "name": "Crack a hash", "command": "hashcat -m <mode> hash.txt /usr/share/wordlists/rockyou.txt", "note": "-m mode: 1000 NTLM, 0 MD5, 1800 sha512crypt" },
+
+    { "tool": "impacket", "name": "AS-REP roast", "command": "impacket-GetNPUsers {DOMAIN}/ -usersfile users.txt -no-pass -dc-ip {TARGET}", "note": "Users with no pre-auth" },
+    { "tool": "impacket", "name": "Kerberoast", "command": "impacket-GetUserSPNs {DOMAIN}/<user>:<pass> -dc-ip {TARGET} -request", "note": "Gets crackable service hashes" },
+    { "tool": "impacket", "name": "Dump secrets", "command": "impacket-secretsdump {DOMAIN}/<user>:<pass>@{TARGET}", "note": "Needs admin. Dumps hashes" },
+    { "tool": "impacket", "name": "psexec shell", "command": "impacket-psexec {DOMAIN}/<user>:<pass>@{TARGET}", "note": "SYSTEM shell if admin" },
+
+    { "tool": "evil-winrm", "name": "WinRM shell", "command": "evil-winrm -i {TARGET} -u <user> -p <pass>", "note": "Windows remote shell (port 5985)" },
+    { "tool": "ssh", "name": "SSH in", "command": "ssh <user>@{TARGET}", "note": "Classic login" },
+    { "tool": "ftp", "name": "FTP connect", "command": "ftp {TARGET}", "note": "Try anonymous / anonymous" },
+
+    { "tool": "shells", "name": "Netcat listener", "command": "nc -lvnp 4444", "note": "Catch a reverse shell here" },
+    { "tool": "shells", "name": "Responder", "command": "sudo responder -I tun0", "note": "Grab NTLM hashes on the network" }
+  ]
+}
