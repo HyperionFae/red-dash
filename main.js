@@ -44,7 +44,7 @@ app.on('window-all-closed', () => app.quit())
 let shellProc = null
 let outputWatcher = null
 
-ipcMain.on('term-ready', (e) => {
+ipcMain.on('term-ready', (e, size) => {
   // a page reload fires this again — kill the old shell so it doesn't
   // keep running in the background, orphaned
   if (shellProc) { try { shellProc.kill() } catch {} }
@@ -53,7 +53,11 @@ ipcMain.on('term-ready', (e) => {
     name: 'xterm-color',
     cwd: workspaceDir() || process.env.HOME || os.homedir(),
     env: process.env,
-    cols: 100, rows: 30
+    // spawn at the terminal's real on-screen size (not a guessed default) so
+    // the shell draws its first prompt at the right width — spawning smaller
+    // then resizing a moment later makes zsh redraw the prompt line on top
+    // of the old one (SIGWINCH), leaving a ghosted double prompt.
+    cols: size?.cols || 100, rows: size?.rows || 30
   })
   shellProc.onData(d => { if (win) win.webContents.send('term-out', d) })
 })
@@ -191,6 +195,15 @@ function have(bin) {
   try { execSync('command -v ' + bin, { stdio: 'ignore', shell: '/bin/bash' }); return true }
   catch { return false }
 }
+// A TOOL_CHECKS `bins` entry is normally one required binary (a string). Some
+// tools go by a different name depending on how they were installed (e.g.
+// Arch's impacket package ships "secretsdump.py", pipx's install creates
+// "impacket-secretsdump") — write that entry as an array of alternatives and
+// ANY one of them being present satisfies it, instead of hardcoding one name
+// and silently failing for everyone who installed it a different way.
+function haveBin(bin) {
+  return Array.isArray(bin) ? bin.some(have) : have(bin)
+}
 
 // Detect the system package manager so install hints suit the user's distro,
 // not just Arch. First match wins. Returns null if none is found.
@@ -218,10 +231,15 @@ function detectPM() {
 // Install hint is built per-distro at runtime:
 //   `pkg`  = package name in the official repos -> gets the right install verb
 //            for the user's package manager (pacman/apt/dnf/zypper/apk).
+//            Either a plain string (same name on every distro) or an object
+//            keyed by package-manager bin (pacman/apt/dnf/zypper/apk) for
+//            tools whose package name actually differs per distro. If the
+//            current PM has no entry, the pkg line is skipped rather than
+//            guessing wrong — `note` (if present) still shows.
 //   `note` = a distro-agnostic install line (pipx/gem/go/git/AUR) for tools
 //            that aren't in most official repos. Shown as-is.
-// A tool can have `pkg`, `note`, or both. Package names are Arch-correct and
-// best-effort elsewhere (the verb is swapped; a name may occasionally differ).
+// A tool can have `pkg`, `note`, or both.
+const SMBCLIENT_PKG = { pacman: 'smbclient', apt: 'smbclient', dnf: 'samba-client', zypper: 'samba-client', apk: 'samba-client' }
 const TOOL_CHECKS = {
   hosts:        { skip: true },
   nmap:         { bins: ['nmap'], pkg: 'nmap' },
@@ -229,36 +247,51 @@ const TOOL_CHECKS = {
   ffuf:         { bins: ['ffuf'], note: 'go install github.com/ffuf/ffuf/v2@latest   # or AUR: yay -S ffuf' },
   feroxbuster:  { bins: ['feroxbuster'], note: 'cargo install feroxbuster   # or AUR: yay -S feroxbuster' },
   nikto:        { bins: ['nikto'], pkg: 'nikto', note: 'Arch: yay -S nikto (AUR)' },
-  whatweb:      { bins: ['whatweb'], pkg: 'whatweb', note: 'Arch: yay -S whatweb (AUR)' },
+  // Not published as a RubyGem — AUR or a direct git clone are the only real options.
+  whatweb:      { bins: ['whatweb'], note: 'yay -S whatweb (AUR)   # or: git clone https://github.com/urbanadventurer/WhatWeb ~/WhatWeb' },
   wpscan:       { bins: ['wpscan'], note: 'gem install wpscan   # or AUR: yay -S wpscan' },
   curl:         { bins: ['curl'], pkg: 'curl' },
-  smb:          { bins: ['smbclient', 'smbmap', 'enum4linux-ng'], pkg: 'smbclient', note: 'then: pipx install smbmap enum4linux-ng' },
+  smb:          { bins: ['smbclient', 'smbmap', 'enum4linux-ng'], pkg: SMBCLIENT_PKG, note: 'then: pipx install smbmap enum4linux-ng' },
   netexec:      { bins: ['nxc'], note: 'pipx install netexec   # formerly crackmapexec' },
-  rpc:          { bins: ['rpcclient'], pkg: 'smbclient' },
-  nfs:          { bins: ['showmount'], pkg: 'nfs-utils' },
-  ldap:         { bins: ['ldapsearch'], pkg: 'openldap' },
+  rpc:          { bins: ['rpcclient'], pkg: SMBCLIENT_PKG },
+  nfs:          { bins: ['showmount'], pkg: { pacman: 'nfs-utils', apt: 'nfs-common', dnf: 'nfs-utils', zypper: 'nfs-client', apk: 'nfs-utils' } },
+  ldap:         { bins: ['ldapsearch'], pkg: { pacman: 'openldap', apt: 'ldap-utils', dnf: 'openldap-clients', zypper: 'openldap2-client', apk: 'openldap-clients' } },
   snmp:         { bins: ['snmpwalk'], pkg: 'net-snmp' },
-  dns:          { bins: ['dig', 'dnsrecon'], pkg: 'bind', note: 'then: pipx install dnsrecon' },
+  dns:          { bins: ['dig', 'dnsrecon'], pkg: { pacman: 'bind', apt: 'dnsutils', dnf: 'bind-utils', zypper: 'bind-utils', apk: 'bind-tools' }, note: 'then: pipx install dnsrecon' },
   git:          { bins: ['git-dumper'], note: 'pipx install git-dumper' },
   sqlmap:       { bins: ['sqlmap'], pkg: 'sqlmap' },
-  searchsploit: { bins: ['searchsploit'], pkg: 'exploitdb' },
+  searchsploit: { bins: ['searchsploit'], pkg: { pacman: 'exploitdb', apt: 'exploitdb' }, note: 'or: git clone https://github.com/offensive-security/exploitdb /opt/exploitdb' },
   hydra:        { bins: ['hydra'], pkg: 'hydra' },
   john:         { bins: ['john'], pkg: 'john' },
   hashcat:      { bins: ['hashcat'], pkg: 'hashcat' },
-  impacket:     { bins: ['impacket-secretsdump'], pkg: 'impacket', note: 'or: pipx install impacket' },
+  // Arch's impacket package ships the raw upstream script names (secretsdump.py,
+  // GetNPUsers.py, ...) while `pipx install impacket` creates "impacket-secretsdump"
+  // wrapper scripts instead — accept either so it's detected regardless of
+  // which way it was installed.
+  impacket:     { bins: [['secretsdump.py', 'impacket-secretsdump']], pkg: { pacman: 'impacket', apt: 'python3-impacket' }, note: 'or: pipx install impacket' },
   'evil-winrm': { bins: ['evil-winrm'], note: 'gem install evil-winrm   # or AUR: yay -S ruby-evil-winrm' },
-  ssh:          { bins: ['ssh'], pkg: 'openssh' },
-  ftp:          { bins: ['ftp'], pkg: 'inetutils' },
-  shells:       { bins: ['nc'], pkg: 'openbsd-netcat', note: 'Responder: pipx install responder' },
+  ssh:          { bins: ['ssh'], pkg: { pacman: 'openssh', apt: 'openssh-client', dnf: 'openssh-clients', zypper: 'openssh-clients', apk: 'openssh-client' } },
+  ftp:          { bins: ['ftp'], pkg: { pacman: 'inetutils', apt: 'ftp', dnf: 'ftp', zypper: 'ftp' } },
+  shells:       { bins: ['nc'], pkg: { pacman: 'openbsd-netcat', apt: 'netcat-openbsd', dnf: 'nmap-ncat', zypper: 'netcat-openbsd', apk: 'netcat-openbsd' }, note: 'Responder: pipx install responder' },
   burpsuite:    { bins: ['burpsuite', 'burpsuite-pro'], any: true, note: 'download from portswigger.net/burp   # or AUR: yay -S burpsuite' }
+}
+
+// resolves a TOOL_CHECKS `pkg` (plain string, or {pmBin: name} map) to the
+// right package name for the detected PM. Returns null rather than a
+// guessed-wrong name when the map has no entry for this PM.
+function resolvePkgName(pkg, pm) {
+  if (!pkg) return null
+  if (typeof pkg === 'string') return pkg
+  return (pm && pkg[pm.bin]) || null
 }
 
 // turns a tool definition into an install hint for THIS machine's package manager
 function buildHint(def) {
   const pm = detectPM()
   const parts = []
-  if (def.pkg) {
-    parts.push(pm ? `${pm.install} ${def.pkg}` : `install ${def.pkg} with your package manager`)
+  const pkgName = resolvePkgName(def.pkg, pm)
+  if (pkgName) {
+    parts.push(pm ? `${pm.install} ${pkgName}` : `install ${pkgName} with your package manager`)
   }
   if (def.note) parts.push(def.note)
   return parts.join('   # ') || 'install this tool (see its docs)'
@@ -339,7 +372,7 @@ ipcMain.handle('check-env', () => {
     const def = TOOL_CHECKS[name]
     if (def && def.skip) continue
     if (def) {
-      tools[name] = def.any ? def.bins.some(have) : def.bins.every(have)
+      tools[name] = def.any ? def.bins.some(haveBin) : def.bins.every(haveBin)
       hints[name] = buildHint(def)
     } else {
       // unknown group — e.g. a custom example added by the user whose

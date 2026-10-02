@@ -3,18 +3,67 @@ const { ipcRenderer } = require('electron')
 // ---------- TERMINAL ----------
 const term = new Terminal({
   cursorBlink: true,
+  cursorStyle: 'bar',
+  scrollback: 5000,
   fontSize: 15,
+  lineHeight: 1.15,
+  letterSpacing: 0.3,
   fontFamily: 'ui-monospace, "JetBrains Mono", monospace',
-  theme: { background: '#15151b', foreground: '#e6e6ee' }
+  theme: {
+    background: '#101016',
+    foreground: '#e6e6ee',
+    cursor: '#ff5370',
+    cursorAccent: '#101016',
+    selectionBackground: 'rgba(79, 214, 200, 0.25)',
+    black: '#1d1d26',
+    red: '#ff5370',
+    green: '#8bd49c',
+    yellow: '#ffcb6b',
+    blue: '#82aaff',
+    magenta: '#c792ea',
+    cyan: '#4fd6c8',
+    white: '#e6e6ee',
+    brightBlack: '#32323f',
+    brightRed: '#ff6e82',
+    brightGreen: '#a3e6b2',
+    brightYellow: '#ffd98e',
+    brightBlue: '#9cc0ff',
+    brightMagenta: '#d9aef0',
+    brightCyan: '#7fe6da',
+    brightWhite: '#ffffff'
+  }
 })
 const fit = new FitAddon.FitAddon()
 term.loadAddon(fit)
 term.open(document.getElementById('terminal'))
 fit.fit()
 
+// RED DASH banner — shown each time a shell connects (first launch, and
+// again after Reload since that respawns the shell too).
+function printBanner() {
+  const RESET = '\x1b[0m'
+  const RED = '\x1b[38;2;255;83;112m'
+  const RED_BOLD = '\x1b[1;38;2;255;83;112m'
+  const DIM = '\x1b[38;2;154;154;176m'
+  const lines = ['RED DASH', 'visual red team cockpit']
+  const innerWidth = Math.max(...lines.map(l => l.length)) + 10
+  const center = (s) => {
+    const total = innerWidth - s.length
+    const left = Math.floor(total / 2)
+    return ' '.repeat(left) + s + ' '.repeat(total - left)
+  }
+  const h = '─'.repeat(innerWidth)
+  term.writeln(RED + '┌' + h + '┐' + RESET)
+  term.writeln(RED + '│' + RESET + RED_BOLD + center('RED DASH') + RESET + RED + '│' + RESET)
+  term.writeln(RED + '│' + RESET + DIM + center('visual red team cockpit') + RESET + RED + '│' + RESET)
+  term.writeln(RED + '└' + h + '┘' + RESET)
+  term.writeln('')
+}
+printBanner()
+
 term.onData(d => ipcRenderer.send('term-in', d))
 ipcRenderer.on('term-out', (e, d) => term.write(d))
-ipcRenderer.send('term-ready')
+ipcRenderer.send('term-ready', { cols: term.cols, rows: term.rows })
 
 // Ctrl+Shift+C always copies the selection; plain Ctrl+C copies instead of
 // sending SIGINT only when there's a selection (matches gnome-terminal/VS
@@ -27,10 +76,28 @@ term.attachCustomKeyEventHandler((e) => {
 })
 
 function doFit() {
-  try { fit.fit(); ipcRenderer.send('term-resize', { cols: term.cols, rows: term.rows }) } catch {}
+  try {
+    // Only actually resize when the proposed size changed. xterm.js sizes its
+    // internal DOM to cols×cellWidth, so calling fit() unconditionally inside
+    // a ResizeObserver callback can retrigger that same observer (the fit
+    // nudges the element's size, which fires the observer again), growing the
+    // terminal panel past its grid column on every tick instead of settling.
+    const proposed = fit.proposeDimensions()
+    if (!proposed) return
+    if (proposed.cols === term.cols && proposed.rows === term.rows) return
+    fit.fit()
+    ipcRenderer.send('term-resize', { cols: term.cols, rows: term.rows })
+  } catch {}
 }
 window.addEventListener('resize', doFit)
 setTimeout(doFit, 300)
+
+// The window itself doesn't resize when the hint bar, setup strip, etc. show
+// or hide — only the terminal's own panel shrinks/grows via layout. A plain
+// `window.resize` listener misses that, so the already-rendered terminal
+// content gets visually clipped by the now-smaller panel until it grows back.
+// Watch the panel's actual size instead, so it re-fits on any layout change.
+new ResizeObserver(doFit).observe(document.getElementById('terminal'))
 
 // ---------- STATE ----------
 let target = { target: '', domain: '', workspace: '' }
@@ -156,15 +223,17 @@ async function checkEnv() {
   const env = await ipcRenderer.invoke('check-env')
   const dismissed = new Set(env.dismissed || [])
   let allGood = true
+  let missingCount = 0
 
   // tools chips (incl. SecLists) — only show what's still missing and not
-  // dismissed; found/dismissed tools drop off the strip
+  // dismissed; found/dismissed tools drop off the list
   const chips = document.getElementById('chips')
   chips.innerHTML = ''
   for (const [name, ok] of Object.entries(env.tools)) {
     if (ok) continue
     if (dismissed.has(name)) continue
     allGood = false
+    missingCount++
     const c = document.createElement('span')
     c.className = 'chip bad'
     c.title = 'Click for the install command'
@@ -192,8 +261,14 @@ async function checkEnv() {
   btnUndismiss.classList.toggle('hidden', dismissedCount === 0)
   btnUndismiss.textContent = `Show dismissed (${dismissedCount})`
 
-  // whole setup strip disappears once everything is found or dismissed
-  document.getElementById('status-strip').classList.toggle('hidden', allGood)
+  // Setup stays collapsed either way — just the toggle button's label/color
+  // says whether anything needs attention, instead of a strip of chips
+  // sitting open all the time for tools you may not even plan to use.
+  const toggle = document.getElementById('btn-setup-toggle')
+  const label = document.getElementById('setup-toggle-label')
+  toggle.classList.toggle('missing', !allGood)
+  toggle.classList.toggle('all-good', allGood)
+  label.textContent = allGood ? 'Setup ✓' : `Setup (${missingCount} missing)`
 
   if (allGood) stopEnvPolling()
   renderExamples()
@@ -229,6 +304,19 @@ document.getElementById('btn-undismiss').onclick = async () => {
   await ipcRenderer.invoke('undismiss-tools')
   checkEnv(); startEnvPolling()
 }
+
+// setup dropdown open/close — collapsed by default, click the toggle to
+// check what's missing; clicking anywhere outside closes it again
+const setupDropdown = document.getElementById('setup-dropdown')
+document.getElementById('btn-setup-toggle').onclick = (e) => {
+  e.stopPropagation()
+  setupDropdown.classList.toggle('hidden')
+}
+document.addEventListener('click', (e) => {
+  if (setupDropdown.classList.contains('hidden')) return
+  if (e.target.closest('#setup-bar')) return
+  setupDropdown.classList.add('hidden')
+})
 
 // ---------- EXAMPLES ----------
 let allExamples = []

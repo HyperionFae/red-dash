@@ -36,13 +36,21 @@
     <button id="btn-reload" class="ghost" title="Reload the whole app">⟳ Reload</button>
   </div>
 
-  <!-- STATUS STRIP: tools + seclists -->
-  <div id="status-strip">
-    <span class="status-label">Setup:</span>
-    <span id="chips"></span>
-    <span class="spacer"></span>
-    <button id="btn-undismiss" class="mini ghost hidden">Show dismissed</button>
-    <button id="btn-recheck" class="mini ghost">Re-check</button>
+  <!-- SETUP: tools + seclists, collapsed into a dropdown so it doesn't -->
+  <!-- nag when you're not using every tool — click to check anytime. -->
+  <div id="setup-bar">
+    <button id="btn-setup-toggle" class="mini ghost">
+      <span id="setup-toggle-label">Setup</span>
+    </button>
+    <div id="setup-dropdown" class="hidden">
+      <div class="setup-dropdown-head">
+        <span class="status-label">Setup</span>
+        <span class="spacer"></span>
+        <button id="btn-undismiss" class="mini ghost hidden">Show dismissed</button>
+        <button id="btn-recheck" class="mini ghost">Re-check</button>
+      </div>
+      <div id="chips"></div>
+    </div>
   </div>
 
   <!-- install hint popup -->
@@ -63,6 +71,10 @@
     </div>
 
     <div id="center">
+      <div id="term-header">
+        <span class="term-dots"><i></i><i></i><i></i></span>
+        <span class="term-title">RED DASH — terminal</span>
+      </div>
       <div id="terminal"></div>
     </div>
 
