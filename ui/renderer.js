@@ -1,138 +1,193 @@
-const { ipcRenderer } = require('electron')
+// Runs sandboxed (contextIsolation on, no Node). Everything that touches the
+// system goes through the global `api` that preload.js exposes (it's a
+// non-configurable window property, so it can't be re-declared with const here).
+const $ = (id) => document.getElementById(id)
+
+// small localStorage wrapper — UI conveniences only (panel widths, collapsed
+// groups), so failures are silently ignored
+const prefs = {
+  get(k, d) { try { const v = localStorage.getItem('rd.' + k); return v == null ? d : JSON.parse(v) } catch { return d } },
+  set(k, v) { try { localStorage.setItem('rd.' + k, JSON.stringify(v)) } catch {} }
+}
 
 // ---------- TERMINAL ----------
 const term = new Terminal({
   cursorBlink: true,
   cursorStyle: 'bar',
-  scrollback: 5000,
-  fontSize: 15,
-  lineHeight: 1.15,
-  letterSpacing: 0.3,
-  fontFamily: 'ui-monospace, "JetBrains Mono", monospace',
+  scrollback: 10000,
+  fontSize: 14,
+  lineHeight: 1.2,
+  fontFamily: '"JetBrainsMono Nerd Font", "JetBrains Mono", ui-monospace, monospace',
   theme: {
-    background: '#101016',
-    foreground: '#e6e6ee',
-    cursor: '#ff5370',
-    cursorAccent: '#101016',
-    selectionBackground: 'rgba(79, 214, 200, 0.25)',
-    black: '#1d1d26',
-    red: '#ff5370',
-    green: '#8bd49c',
-    yellow: '#ffcb6b',
-    blue: '#82aaff',
-    magenta: '#c792ea',
-    cyan: '#4fd6c8',
-    white: '#e6e6ee',
-    brightBlack: '#32323f',
-    brightRed: '#ff6e82',
-    brightGreen: '#a3e6b2',
-    brightYellow: '#ffd98e',
-    brightBlue: '#9cc0ff',
-    brightMagenta: '#d9aef0',
-    brightCyan: '#7fe6da',
+    background: '#08080b',
+    foreground: '#e4e4ec',
+    cursor: '#ff3b5c',
+    cursorAccent: '#08080b',
+    selectionBackground: 'rgba(255, 59, 92, 0.28)',
+    black: '#15151d',
+    red: '#ff3b5c',
+    green: '#3ddc97',
+    yellow: '#ffb547',
+    blue: '#7aa2ff',
+    magenta: '#b392f0',
+    cyan: '#5ad1e6',
+    white: '#e4e4ec',
+    brightBlack: '#55556a',
+    brightRed: '#ff6b84',
+    brightGreen: '#6ff0b6',
+    brightYellow: '#ffcb7d',
+    brightBlue: '#a3bfff',
+    brightMagenta: '#ccb3f7',
+    brightCyan: '#8be3f2',
     brightWhite: '#ffffff'
   }
 })
 const fit = new FitAddon.FitAddon()
 term.loadAddon(fit)
-term.open(document.getElementById('terminal'))
+term.open($('terminal'))
 fit.fit()
 
-// RED DASH banner — shown each time a shell connects (first launch, and
-// again after Reload since that respawns the shell too).
+// banner — shown each time a shell connects (launch, and after Reload)
 function printBanner() {
-  const RESET = '\x1b[0m'
-  const RED = '\x1b[38;2;255;83;112m'
-  const RED_BOLD = '\x1b[1;38;2;255;83;112m'
-  const DIM = '\x1b[38;2;154;154;176m'
-  const lines = ['RED DASH', 'visual red team cockpit']
-  const innerWidth = Math.max(...lines.map(l => l.length)) + 10
-  const center = (s) => {
-    const total = innerWidth - s.length
-    const left = Math.floor(total / 2)
-    return ' '.repeat(left) + s + ' '.repeat(total - left)
-  }
-  const h = '─'.repeat(innerWidth)
-  term.writeln(RED + '┌' + h + '┐' + RESET)
-  term.writeln(RED + '│' + RESET + RED_BOLD + center('RED DASH') + RESET + RED + '│' + RESET)
-  term.writeln(RED + '│' + RESET + DIM + center('visual red team cockpit') + RESET + RED + '│' + RESET)
-  term.writeln(RED + '└' + h + '┘' + RESET)
+  const R = '\x1b[0m'
+  const RED = '\x1b[1;38;2;255;59;92m'
+  const DIM = '\x1b[38;2;85;85;106m'
+  const TXT = '\x1b[38;2;139;139;158m'
+  term.writeln('')
+  term.writeln(`  ${RED}▶ RED DASH${R}  ${DIM}│${R}  ${TXT}visual red team cockpit${R}`)
+  term.writeln(`  ${DIM}${'─'.repeat(38)}${R}`)
   term.writeln('')
 }
 printBanner()
 
-term.onData(d => ipcRenderer.send('term-in', d))
-ipcRenderer.on('term-out', (e, d) => term.write(d))
-ipcRenderer.send('term-ready', { cols: term.cols, rows: term.rows })
+term.onData(d => api.send('term-in', d))
+api.on('term-out', d => term.write(d))
+api.send('term-ready', { cols: term.cols, rows: term.rows })
 
-// Ctrl+Shift+C always copies the selection; plain Ctrl+C copies instead of
-// sending SIGINT only when there's a selection (matches gnome-terminal/VS
-// Code convention) so it doesn't interrupt a running command by accident.
+// Ctrl+C copies instead of sending SIGINT only when there's a selection
+// (gnome-terminal / VS Code convention) so it never interrupts by accident
 term.attachCustomKeyEventHandler((e) => {
+  // Ctrl+Shift+K is the app's "filter playbook" shortcut — don't send it to the shell
+  if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'k') return false
   if (e.type !== 'keydown' || !e.ctrlKey || e.key.toLowerCase() !== 'c') return true
   if (!term.hasSelection()) return true
-  ipcRenderer.invoke('copy-text', term.getSelection())
+  api.invoke('copy-text', term.getSelection())
   return false
 })
 
 function doFit() {
   try {
-    // Only actually resize when the proposed size changed. xterm.js sizes its
-    // internal DOM to cols×cellWidth, so calling fit() unconditionally inside
-    // a ResizeObserver callback can retrigger that same observer (the fit
-    // nudges the element's size, which fires the observer again), growing the
-    // terminal panel past its grid column on every tick instead of settling.
+    // only resize when the proposed size actually changed — calling fit()
+    // unconditionally inside the ResizeObserver can retrigger it in a loop
     const proposed = fit.proposeDimensions()
     if (!proposed) return
     if (proposed.cols === term.cols && proposed.rows === term.rows) return
     fit.fit()
-    ipcRenderer.send('term-resize', { cols: term.cols, rows: term.rows })
+    api.send('term-resize', { cols: term.cols, rows: term.rows })
   } catch {}
 }
 window.addEventListener('resize', doFit)
 setTimeout(doFit, 300)
-
-// The window itself doesn't resize when the hint bar, setup strip, etc. show
-// or hide — only the terminal's own panel shrinks/grows via layout. A plain
-// `window.resize` listener misses that, so the already-rendered terminal
-// content gets visually clipped by the now-smaller panel until it grows back.
-// Watch the panel's actual size instead, so it re-fits on any layout change.
-new ResizeObserver(doFit).observe(document.getElementById('terminal'))
+// panel size changes (resizers, popups) don't fire window.resize
+new ResizeObserver(doFit).observe($('terminal'))
 
 // ---------- STATE ----------
 let target = { target: '', domain: '', workspace: '' }
 let currentOutDir = ''
+let shellName = 'shell'
+let missingTools = new Set()
 const DEFAULTS = {
   WORDLIST: '/usr/share/seclists/Discovery/Web-Content/common.txt',
   SUBLIST: '/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt',
   PORTS: ''
 }
 
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+}
+
+let toastTimer
+function toast(msg) {
+  const t = $('toast')
+  t.textContent = msg
+  t.classList.remove('hidden')
+  clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => t.classList.add('hidden'), 1600)
+}
+
+// ---------- RESIZABLE PANELS ----------
+const root = document.documentElement
+function applyWidths() {
+  root.style.setProperty('--left-w', prefs.get('leftW', 300) + 'px')
+  root.style.setProperty('--right-w', prefs.get('rightW', 380) + 'px')
+}
+applyWidths()
+for (const handle of document.querySelectorAll('.resizer')) {
+  handle.addEventListener('mousedown', (e) => {
+    e.preventDefault()
+    const side = handle.dataset.side
+    const startX = e.clientX
+    const startW = prefs.get(side === 'left' ? 'leftW' : 'rightW', side === 'left' ? 300 : 380)
+    handle.classList.add('dragging')
+    document.body.classList.add('resizing')
+    const move = (ev) => {
+      const dx = ev.clientX - startX
+      const w = Math.max(220, Math.min(640, side === 'left' ? startW + dx : startW - dx))
+      prefs.set(side === 'left' ? 'leftW' : 'rightW', w)
+      applyWidths()
+    }
+    const up = () => {
+      handle.classList.remove('dragging')
+      document.body.classList.remove('resizing')
+      window.removeEventListener('mousemove', move)
+      window.removeEventListener('mouseup', up)
+    }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+  })
+  handle.addEventListener('dblclick', () => {
+    prefs.set(handle.dataset.side === 'left' ? 'leftW' : 'rightW', handle.dataset.side === 'left' ? 300 : 380)
+    applyWidths()
+  })
+}
+
 // ---------- TARGET BAR ----------
-const inTarget = document.getElementById('in-target')
-const inDomain = document.getElementById('in-domain')
+const inTarget = $('in-target')
+const inDomain = $('in-domain')
 async function loadTarget() {
-  target = await ipcRenderer.invoke('get-target')
+  target = await api.invoke('get-target')
   inTarget.value = target.target || ''
   inDomain.value = target.domain || ''
-  updateBrand()
+  updateTargetDisplay()
 }
-function updateBrand() {
-  const b = document.querySelector('.brand')
+function updateTargetDisplay() {
   const t = target.target || target.domain
-  b.textContent = t ? 'RED DASH  →  ' + t : 'RED DASH'
+  $('term-target').textContent = t ? '▸ ' + [target.target, target.domain].filter(Boolean).join(' · ') : ''
+  document.title = t ? `Red Dash ▸ ${t}` : 'Red Dash'
 }
-document.getElementById('btn-set-target').onclick = async () => {
-  target = await ipcRenderer.invoke('set-target', {
+function updateTermTitle() {
+  $('term-title').textContent = target.workspace ? `${shellName} — ${target.workspace}` : shellName
+}
+async function setTarget() {
+  target = await api.invoke('set-target', {
     target: inTarget.value.trim(), domain: inDomain.value.trim()
   })
-  updateBrand(); renderExamples()
+  updateTargetDisplay(); renderExamples()
+  const seg = document.querySelector('.target-seg')
+  seg.classList.add('flash')
+  setTimeout(() => seg.classList.remove('flash'), 500)
+  toast(target.target || target.domain ? 'Target set — commands updated' : 'Target cleared')
+}
+$('btn-set-target').onclick = setTarget
+for (const inp of [inTarget, inDomain]) {
+  inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') setTarget() })
 }
 
 // ---------- WORKSPACES ----------
-const selWs = document.getElementById('sel-workspace')
+const selWs = $('sel-workspace')
 async function loadWorkspaces() {
-  const list = await ipcRenderer.invoke('list-workspaces')
+  const list = await api.invoke('list-workspaces')
   selWs.innerHTML = '<option value="">— pick a box —</option>'
   for (const w of list) {
     const o = document.createElement('option')
@@ -142,74 +197,83 @@ async function loadWorkspaces() {
   }
 }
 function updateDeleteBtn() {
-  document.getElementById('btn-delete-workspace').disabled = !target.workspace
+  $('btn-delete-workspace').disabled = !target.workspace
 }
-selWs.onchange = async () => {
-  if (!selWs.value) return
-  const res = await ipcRenderer.invoke('set-workspace', selWs.value)
+async function switchWorkspace(name) {
+  await flushNote()
+  const res = await api.invoke('set-workspace', name)
   currentOutDir = res.outputDir
   target.workspace = res.workspace
-  updateDeleteBtn()
+  updateDeleteBtn(); updateTermTitle()
+  clearOutputView()
   refreshOutput(); renderExamples()
   if (activeTab !== 'output') loadNote(activeTab)
 }
-const newboxModal = document.getElementById('modal-newbox')
-const newboxName = document.getElementById('newbox-name')
+selWs.onchange = () => { if (selWs.value) switchWorkspace(selWs.value) }
+
+const newboxModal = $('modal-newbox')
+const newboxName = $('newbox-name')
 async function createWorkspace() {
   const name = newboxName.value.trim()
   newboxModal.classList.add('hidden')
   if (!name) return
-  const safe = await ipcRenderer.invoke('new-workspace', name)
+  const safe = await api.invoke('new-workspace', name)
+  if (!safe) return toast('Invalid box name')
   await loadWorkspaces()
   selWs.value = safe
-  selWs.onchange()
+  await switchWorkspace(safe)
+  toast(`Box "${safe}" ready`)
 }
-document.getElementById('btn-new-workspace').onclick = () => {
+$('btn-new-workspace').onclick = () => {
   newboxName.value = ''
   newboxModal.classList.remove('hidden')
   newboxName.focus()
 }
-document.getElementById('newbox-create').onclick = createWorkspace
-document.getElementById('newbox-cancel').onclick = () => newboxModal.classList.add('hidden')
+$('newbox-create').onclick = createWorkspace
+$('newbox-cancel').onclick = () => newboxModal.classList.add('hidden')
 newboxName.addEventListener('keydown', (e) => { if (e.key === 'Enter') createWorkspace() })
 
 // ---------- DELETE BOX ----------
-const deleteModal = document.getElementById('modal-delete')
-document.getElementById('btn-delete-workspace').onclick = () => {
+const deleteModal = $('modal-delete')
+$('btn-delete-workspace').onclick = () => {
   if (!target.workspace) return
-  document.getElementById('delete-warning').textContent =
+  $('delete-warning').textContent =
     `This permanently deletes workspaces/${target.workspace} — all its output, notes, and loot. This cannot be undone.`
   deleteModal.classList.remove('hidden')
+  $('delete-cancel').focus()
 }
-document.getElementById('delete-cancel').onclick = () => deleteModal.classList.add('hidden')
-document.getElementById('delete-confirm').onclick = async () => {
+$('delete-cancel').onclick = () => deleteModal.classList.add('hidden')
+$('delete-confirm').onclick = async () => {
   const name = target.workspace
   deleteModal.classList.add('hidden')
-  await ipcRenderer.invoke('delete-workspace', name)
+  clearTimeout(noteTimer); noteDirty = false   // don't write notes into a box being deleted
+  await api.invoke('delete-workspace', name)
   target.workspace = ''
   currentOutDir = ''
   selWs.value = ''
-  updateDeleteBtn()
+  updateDeleteBtn(); updateTermTitle()
   await loadWorkspaces()
+  clearOutputView()
   refreshOutput(); renderExamples()
   if (activeTab !== 'output') loadNote(activeTab)
+  toast(`Deleted ${name}`)
 }
 
 // ---------- RELOAD ----------
-document.getElementById('btn-reload').onclick = () => location.reload()
+$('btn-reload').onclick = async () => { await flushNote(); location.reload() }
 
 // ---------- VPN STATUS (HTB/THM openvpn or wireguard) ----------
 async function checkVpn() {
-  const v = await ipcRenderer.invoke('check-vpn')
-  const el = document.getElementById('vpn-status')
+  const v = await api.invoke('check-vpn')
+  const el = $('vpn-status')
   if (v.connected) {
-    el.className = 'chip ok'
-    el.textContent = `✓ ${v.ip}`
+    el.className = 'pill ok'
+    $('vpn-text').textContent = v.ip
     el.title = `${v.iface} — click to copy IP`
-    el.onclick = () => ipcRenderer.invoke('copy-text', v.ip)
+    el.onclick = async () => { await api.invoke('copy-text', v.ip); toast(`Copied ${v.ip}`) }
   } else {
-    el.className = 'chip bad'
-    el.textContent = '✗ not connected'
+    el.className = 'pill bad'
+    $('vpn-text').textContent = 'offline'
     el.title = 'No tun/tap/wg interface found — connect your HTB/THM VPN'
     el.onclick = null
   }
@@ -218,64 +282,68 @@ setInterval(checkVpn, 3000)
 
 // ---------- ENV CHECK (tools + seclists) ----------
 let envPollTimer = null
+let activeHint = null
 
 async function checkEnv() {
-  const env = await ipcRenderer.invoke('check-env')
+  const env = await api.invoke('check-env')
   const dismissed = new Set(env.dismissed || [])
-  let allGood = true
   let missingCount = 0
+  missingTools = new Set(Object.entries(env.tools).filter(([, ok]) => !ok).map(([n]) => n))
 
-  // tools chips (incl. SecLists) — only show what's still missing and not
-  // dismissed; found/dismissed tools drop off the list
-  const chips = document.getElementById('chips')
+  // only show what's still missing and not dismissed
+  const chips = $('chips')
   chips.innerHTML = ''
   for (const [name, ok] of Object.entries(env.tools)) {
-    if (ok) continue
-    if (dismissed.has(name)) continue
-    allGood = false
+    if (ok || dismissed.has(name)) continue
     missingCount++
     const c = document.createElement('span')
-    c.className = 'chip bad'
+    c.className = 'chip bad' + (activeHint === name ? ' active' : '')
     c.title = 'Click for the install command'
-    c.textContent = '✗ ' + name
-    c.onclick = () => showHint(env.hints[name] || ('install ' + name))
-
+    c.textContent = name
+    c.onclick = (e) => {
+      e.stopPropagation()
+      activeHint = name
+      chips.querySelectorAll('.chip').forEach(x => x.classList.toggle('active', x === c))
+      showHint(env.hints[name] || ('install ' + name))
+    }
     const x = document.createElement('span')
     x.className = 'chip-dismiss'
     x.textContent = '×'
     x.title = "Don't ask about " + name + ' again'
     x.onclick = async (e) => {
       e.stopPropagation()
-      await ipcRenderer.invoke('dismiss-tool', name)
+      await api.invoke('dismiss-tool', name)
+      if (activeHint === name) hideHint()
       checkEnv()
     }
     c.appendChild(x)
     chips.appendChild(c)
   }
+  if (!missingCount) chips.innerHTML = '<div class="empty">✓ Everything the playbook needs is installed.</div>'
 
   if (env.wordlist) DEFAULTS.WORDLIST = env.wordlist
   if (env.sublist) DEFAULTS.SUBLIST = env.sublist
 
-  const btnUndismiss = document.getElementById('btn-undismiss')
+  const btnUndismiss = $('btn-undismiss')
   const dismissedCount = (env.dismissed || []).length
   btnUndismiss.classList.toggle('hidden', dismissedCount === 0)
   btnUndismiss.textContent = `Show dismissed (${dismissedCount})`
 
-  // Setup stays collapsed either way — just the toggle button's label/color
-  // says whether anything needs attention, instead of a strip of chips
-  // sitting open all the time for tools you may not even plan to use.
-  const toggle = document.getElementById('btn-setup-toggle')
-  const label = document.getElementById('setup-toggle-label')
+  const allGood = missingCount === 0
+  const toggle = $('btn-setup-toggle')
   toggle.classList.toggle('missing', !allGood)
   toggle.classList.toggle('all-good', allGood)
-  label.textContent = allGood ? 'Setup ✓' : `Setup (${missingCount} missing)`
+  $('setup-toggle-label').textContent = allGood ? 'setup ok' : `setup · ${missingCount} missing`
+
+  const sl = $('sb-seclists')
+  sl.textContent = env.seclists ? '✓ seclists' : '✗ seclists'
+  sl.className = 'sb-item ' + (env.seclists ? 'ok-text' : 'bad-text')
+  sl.title = env.seclists || 'SecLists not found — open setup for the install command'
 
   if (allGood) stopEnvPolling()
   renderExamples()
 }
-
-// real-time: keep re-checking in the background so chips clear themselves
-// the moment an install finishes, without needing a manual Re-check click
+// keep re-checking in the background so chips clear the moment an install finishes
 function startEnvPolling() {
   if (envPollTimer) return
   envPollTimer = setInterval(checkEnv, 4000)
@@ -286,42 +354,46 @@ function stopEnvPolling() {
   envPollTimer = null
 }
 function showHint(cmd) {
-  const bar = document.getElementById('hint-bar')
-  document.getElementById('hint-text').textContent = cmd
-  bar.classList.remove('hidden')
-  const copyBtn = document.getElementById('hint-copy')
-  copyBtn.onclick = async () => {
-    const ok = await ipcRenderer.invoke('copy-text', cmd)
-    const original = 'Copy command'
-    copyBtn.textContent = ok ? 'Copied!' : 'Copy failed'
-    setTimeout(() => { copyBtn.textContent = original }, 1200)
+  $('hint-text').textContent = cmd
+  $('hint-bar').classList.remove('hidden')
+  const copyBtn = $('hint-copy')
+  copyBtn.onclick = async (e) => {
+    e.stopPropagation()
+    const ok = await api.invoke('copy-text', cmd)
+    copyBtn.textContent = ok ? 'Copied' : 'Copy failed'
+    setTimeout(() => { copyBtn.textContent = 'Copy' }, 1200)
   }
 }
-document.getElementById('hint-close').onclick = () =>
-  document.getElementById('hint-bar').classList.add('hidden')
-document.getElementById('btn-recheck').onclick = () => { checkEnv(); startEnvPolling() }
-document.getElementById('btn-undismiss').onclick = async () => {
-  await ipcRenderer.invoke('undismiss-tools')
+function hideHint() {
+  activeHint = null
+  $('hint-bar').classList.add('hidden')
+  $('chips').querySelectorAll('.chip').forEach(x => x.classList.remove('active'))
+}
+$('hint-close').onclick = hideHint
+$('btn-recheck').onclick = () => { checkEnv(); startEnvPolling() }
+$('btn-undismiss').onclick = async () => {
+  await api.invoke('undismiss-tools')
   checkEnv(); startEnvPolling()
 }
 
-// setup dropdown open/close — collapsed by default, click the toggle to
-// check what's missing; clicking anywhere outside closes it again
-const setupDropdown = document.getElementById('setup-dropdown')
-document.getElementById('btn-setup-toggle').onclick = (e) => {
+const setupDropdown = $('setup-dropdown')
+$('btn-setup-toggle').onclick = (e) => {
   e.stopPropagation()
   setupDropdown.classList.toggle('hidden')
 }
 document.addEventListener('click', (e) => {
   if (setupDropdown.classList.contains('hidden')) return
-  if (e.target.closest('#setup-bar')) return
+  if (e.target.closest('#setup-wrap')) return
   setupDropdown.classList.add('hidden')
 })
 
-// ---------- EXAMPLES ----------
+// ---------- PLAYBOOK (examples) ----------
 let allExamples = []
+const collapsed = new Set(prefs.get('collapsed', []))
+const filterInput = $('ex-filter')
+
 async function loadExamples() {
-  allExamples = await ipcRenderer.invoke('get-examples')
+  allExamples = await api.invoke('get-examples')
   renderExamples()
 }
 function fillVars(cmd) {
@@ -333,111 +405,210 @@ function fillVars(cmd) {
     .replaceAll('{SUBLIST}', DEFAULTS.SUBLIST)
     .replaceAll('{PORTS}', DEFAULTS.PORTS || '{PORTS}')
 }
+// escape, then shorten long absolute paths and highlight what still needs typing
+function prettyCmd(cmd) {
+  let s = esc(cmd)
+  if (currentOutDir) s = s.replaceAll(esc(currentOutDir), '<span class="filled">$OUT</span>')
+  for (const k of ['WORDLIST', 'SUBLIST']) {
+    const v = esc(DEFAULTS[k])
+    s = s.replaceAll(v, `<span class="filled" title="${v}">…/${esc(DEFAULTS[k].split('/').pop())}</span>`)
+  }
+  return s.replace(/\{[A-Z]+\}|&lt;[a-z_]+&gt;/g, m => `<span class="var">${m}</span>`)
+}
 function renderExamples() {
-  const box = document.getElementById('examples')
+  const box = $('examples')
+  const q = filterInput.value.trim().toLowerCase()
   box.innerHTML = ''
   const groups = {}
-  for (const ex of allExamples) { (groups[ex.tool] = groups[ex.tool] || []).push(ex) }
+  let shown = 0
+  for (const ex of allExamples) {
+    if (q && ![ex.tool, ex.name, ex.command, ex.note].join(' ').toLowerCase().includes(q)) continue
+    ;(groups[ex.tool] = groups[ex.tool] || []).push(ex)
+    shown++
+  }
+  $('ex-count').textContent = q ? `${shown}/${allExamples.length}` : allExamples.length
+  if (!shown) {
+    box.innerHTML = `<div class="empty">${q ? 'No commands match “' + esc(q) + '”.' : 'No examples loaded.'}</div>`
+    return
+  }
   for (const tool of Object.keys(groups)) {
     const g = document.createElement('div')
-    g.className = 'tool-group'
-    g.innerHTML = `<div class="tool-title">${esc(tool)}</div>`
+    // while filtering, show every match regardless of collapsed state
+    g.className = 'tool-group' + (!q && collapsed.has(tool) ? ' collapsed' : '')
+    const title = document.createElement('div')
+    title.className = 'tool-title'
+    title.innerHTML = `<span class="caret"></span>${esc(tool)}` +
+      (missingTools.has(tool) ? '<span class="missing-tag" title="Not installed — see setup">MISSING</span>' : '') +
+      `<span class="count">${groups[tool].length}</span>`
+    title.onclick = () => {
+      if (collapsed.has(tool)) collapsed.delete(tool); else collapsed.add(tool)
+      prefs.set('collapsed', [...collapsed])
+      g.classList.toggle('collapsed')
+    }
+    g.appendChild(title)
+    const items = document.createElement('div')
+    items.className = 'tool-items'
     for (const ex of groups[tool]) {
       const cmd = fillVars(ex.command)
       const el = document.createElement('div')
       el.className = 'ex'
+      el.title = 'Click to drop into the terminal'
       el.innerHTML = `
         <div class="ex-name">${ex.mine ? '<span class="star">★</span> ' : ''}${esc(ex.name)}</div>
-        <div class="ex-cmd">${esc(cmd)}</div>
+        <div class="ex-cmd">${prettyCmd(cmd)}</div>
         ${ex.note ? `<div class="ex-note">${esc(ex.note)}</div>` : ''}`
-      el.onclick = () => ipcRenderer.send('term-insert', cmd)
-      g.appendChild(el)
+      el.onclick = () => {
+        api.send('term-insert', cmd)
+        term.focus()
+        el.classList.add('sent')
+        setTimeout(() => el.classList.remove('sent'), 900)
+      }
+      if (ex.mine) {
+        const del = document.createElement('span')
+        del.className = 'ex-del'
+        del.textContent = '×'
+        del.title = 'Delete this command'
+        del.onclick = async (e) => {
+          e.stopPropagation()
+          if (!confirm(`Delete "${ex.name}"?`)) return
+          await api.invoke('delete-example', ex.mineIndex)
+          loadExamples()
+        }
+        el.appendChild(del)
+      }
+      items.appendChild(el)
     }
+    g.appendChild(items)
     box.appendChild(g)
   }
 }
+filterInput.addEventListener('input', renderExamples)
+filterInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { filterInput.value = ''; renderExamples(); term.focus() }
+})
+$('btn-collapse-all').onclick = () => {
+  const tools = [...new Set(allExamples.map(x => x.tool))]
+  const allCollapsed = tools.every(t => collapsed.has(t))
+  collapsed.clear()
+  if (!allCollapsed) tools.forEach(t => collapsed.add(t))
+  prefs.set('collapsed', [...collapsed])
+  renderExamples()
+}
 
 // ---------- ADD EXAMPLE ----------
-const modal = document.getElementById('modal')
-document.getElementById('btn-add-example').onclick = () => modal.classList.remove('hidden')
-document.getElementById('ex-cancel').onclick = () => modal.classList.add('hidden')
-document.getElementById('ex-save').onclick = async () => {
+const modal = $('modal')
+$('btn-add-example').onclick = () => { modal.classList.remove('hidden'); $('ex-tool').focus() }
+$('ex-cancel').onclick = () => modal.classList.add('hidden')
+async function saveExample() {
   const ex = {
-    tool: document.getElementById('ex-tool').value.trim() || 'other',
-    name: document.getElementById('ex-name').value.trim() || 'My command',
-    command: document.getElementById('ex-cmd').value.trim(),
-    note: document.getElementById('ex-note').value.trim()
+    tool: $('ex-tool').value.trim() || 'other',
+    name: $('ex-name').value.trim() || 'My command',
+    command: $('ex-cmd').value.trim(),
+    note: $('ex-note').value.trim()
   }
-  if (!ex.command) return
-  await ipcRenderer.invoke('add-example', ex)
+  if (!ex.command) { $('ex-cmd').focus(); return }
+  await api.invoke('add-example', ex)
   modal.classList.add('hidden')
-  document.getElementById('ex-cmd').value = ''
-  document.getElementById('ex-name').value = ''
-  document.getElementById('ex-note').value = ''
-  loadExamples()
+  for (const id of ['ex-cmd', 'ex-name', 'ex-note']) $(id).value = ''
+  await loadExamples()
+  toast('Command saved')
+}
+$('ex-save').onclick = saveExample
+for (const id of ['ex-tool', 'ex-name', 'ex-cmd', 'ex-note']) {
+  $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') saveExample() })
 }
 
 // ---------- OUTPUT ----------
+let selectedFile = null
+let showRaw = false
+const outputView = $('output-view')
+
+function relTime(ms) {
+  const s = Math.round((Date.now() - ms) / 1000)
+  if (s < 60) return 'just now'
+  if (s < 3600) return Math.floor(s / 60) + 'm ago'
+  if (s < 86400) return Math.floor(s / 3600) + 'h ago'
+  return new Date(ms).toLocaleDateString()
+}
+function fmtSize(n) {
+  if (n < 1024) return n + ' B'
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB'
+  return (n / 1048576).toFixed(1) + ' MB'
+}
 async function refreshOutput() {
-  const list = await ipcRenderer.invoke('list-output')
-  const box = document.getElementById('output-list')
+  const list = await api.invoke('list-output')
+  const box = $('output-list')
   box.innerHTML = ''
+  $('sb-files').textContent = target.workspace
+    ? `${list.length} output file${list.length === 1 ? '' : 's'}`
+    : 'no box selected'
+  if (!target.workspace) {
+    box.innerHTML = '<div class="empty">Pick or create a box (top right) to start collecting output.</div>'
+    return
+  }
   if (!list.length) {
-    box.innerHTML = '<div class="out-file" style="color:#9a9ab0">No output yet. Run a scan into this box.</div>'
+    box.innerHTML = '<div class="empty">No output yet.<br>Run a scan from the playbook — it lands here automatically.</div>'
     return
   }
   for (const f of list) {
+    const parts = f.name.split('/')
+    const tag = parts.length > 1 ? parts[0] : 'file'
+    const rest = parts.length > 1 ? parts.slice(1).join('/') : f.name
     const el = document.createElement('div')
-    el.className = 'out-file'
-    const when = new Date(f.mtime).toLocaleTimeString()
-    el.innerHTML = `${esc(f.name)} <span class="t">${esc(when)}</span>`
-    el.onclick = async () => {
-      const txt = await ipcRenderer.invoke('read-output', f.path)
-      const view = document.getElementById('output-view')
-      const summary = buildSummary(f.name, txt)
-      showOutputView(view, summary, txt)
+    el.className = 'out-file' + (f.name === selectedFile ? ' active' : '') +
+      (Date.now() - f.mtime < 120000 ? ' fresh' : '')
+    el.title = `${f.name} · ${fmtSize(f.size)}`
+    el.innerHTML = `<span class="tag">${esc(tag)}</span><span class="n">${esc(rest)}</span><span class="t">${esc(relTime(f.mtime))}</span>`
+    el.onclick = () => {
+      selectedFile = f.name
+      showRaw = false
+      box.querySelectorAll('.out-file').forEach(x => x.classList.toggle('active', x === el))
+      openOutput()
     }
     box.appendChild(el)
   }
+  // a scan still writing to the open file — re-render it live
+  if (selectedFile && list.some(f => f.name === selectedFile)) openOutput(true)
 }
-
-function esc(s) {
-  return String(s).replace(/[&<>"]/g, c => (
-    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
-}
-function renderNmapTable(xmlText) {
-  let doc
-  try { doc = new DOMParser().parseFromString(xmlText, 'text/xml') }
-  catch { return 'Could not read this scan file.' }
-  const hosts = [...doc.querySelectorAll('host')]
-  if (!hosts.length) return 'No hosts yet (scan may still be running).'
-  let html = ''
-  for (const h of hosts) {
-    const addr = h.querySelector('address')?.getAttribute('addr') || '?'
-    const ports = [...h.querySelectorAll('port')]
-      .filter(p => p.querySelector('state')?.getAttribute('state') === 'open')
-    html += `<div class="nmap-host">${esc(addr)}</div>`
-    if (!ports.length) { html += '<div class="dim">No open ports found.</div>'; continue }
-    html += '<table class="nmap-table"><thead><tr><th>Port</th><th>Service</th><th>Version</th></tr></thead><tbody>'
-    for (const p of ports) {
-      const portid = p.getAttribute('portid')
-      const proto = p.getAttribute('protocol')
-      const svc = p.querySelector('service')
-      const name = svc?.getAttribute('name') || ''
-      const product = svc?.getAttribute('product') || ''
-      const version = svc?.getAttribute('version') || ''
-      const extra = svc?.getAttribute('extrainfo') || ''
-      const ver = [product, version, extra].filter(Boolean).join(' ')
-      html += `<tr><td>${esc(portid)}/${esc(proto)}</td><td>${esc(name)}</td><td>${esc(ver)}</td></tr>`
-    }
-    html += '</tbody></table>'
+async function openOutput(keepScroll) {
+  if (!selectedFile) return
+  const scroll = outputView.scrollTop
+  const txt = await api.invoke('read-output', selectedFile)
+  const summary = buildSummary(selectedFile, txt)
+  $('output-view-head').classList.remove('hidden')
+  $('output-view-name').textContent = selectedFile
+  const rawBtn = $('btn-raw-toggle')
+  rawBtn.classList.toggle('hidden', !summary)
+  rawBtn.textContent = showRaw ? 'SUMMARY' : 'RAW'
+  rawBtn.onclick = () => { showRaw = !showRaw; openOutput() }
+  if (!summary || showRaw) {
+    outputView.classList.add('raw')
+    outputView.textContent = txt || '(empty file)'
+  } else {
+    outputView.classList.remove('raw')
+    outputView.innerHTML = summary
   }
-  return html
+  if (keepScroll) outputView.scrollTop = scroll
+}
+function clearOutputView() {
+  selectedFile = null
+  $('output-view-head').classList.add('hidden')
+  outputView.classList.remove('raw')
+  outputView.innerHTML = target.workspace ? '<div class="empty">Pick a file above to read it.</div>' : ''
 }
 
-// ---- per-tool "just the findings" summaries ----
-// Returns an HTML summary string, or null to fall back to the raw file (unknown
-// format, custom command, or a format that didn't match what was expected).
+// fs.watch fires several times per write — coalesce into one refresh
+let outputRefreshTimer
+api.on('output-changed', () => {
+  clearTimeout(outputRefreshTimer)
+  outputRefreshTimer = setTimeout(refreshOutput, 250)
+})
+$('btn-refresh-output').onclick = refreshOutput
+// keep the "2m ago" labels honest
+setInterval(() => { if (activeTab === 'output' && target.workspace) refreshOutput() }, 60000)
+
+// ---- parsers: per-tool "just the findings" summaries ----
+// Return an HTML string, or null to fall back to the raw file.
 function buildSummary(relPath, txt) {
   const tool = relPath.split('/')[0]
   if (relPath.endsWith('.xml') && txt.includes('<nmaprun')) return renderNmapTable(txt)
@@ -449,20 +620,48 @@ function buildSummary(relPath, txt) {
   if (tool === 'whatweb') return renderWhatweb(txt)
   return null
 }
-function buildTable(headers, rows) {
-  if (!rows.length) return '<div class="dim">Nothing found yet (scan may still be running, or everything was filtered).</div>'
-  let html = '<table class="out-table"><thead><tr>' + headers.map(h => `<th>${esc(h)}</th>`).join('') + '</tr></thead><tbody>'
-  for (const r of rows) html += '<tr>' + r.map(c => `<td>${esc(c)}</td>`).join('') + '</tr>'
-  html += '</tbody></table>'
+function renderNmapTable(xmlText) {
+  let doc
+  try { doc = new DOMParser().parseFromString(xmlText, 'text/xml') }
+  catch { return null }
+  const hosts = [...doc.querySelectorAll('host')]
+  if (!hosts.length) return '<div class="empty">No hosts yet — the scan may still be running.</div>'
+  let html = ''
+  for (const h of hosts) {
+    const addr = h.querySelector('address')?.getAttribute('addr') || '?'
+    const ports = [...h.querySelectorAll('port')]
+      .filter(p => p.querySelector('state')?.getAttribute('state') === 'open')
+    html += `<div class="nmap-host">${esc(addr)} <span class="dim">· ${ports.length} open</span></div>`
+    if (!ports.length) { html += '<div class="dim">No open ports found.</div>'; continue }
+    html += '<table class="out-table"><thead><tr><th>Port</th><th>Service</th><th>Version</th></tr></thead><tbody>'
+    for (const p of ports) {
+      const svc = p.querySelector('service')
+      const ver = ['product', 'version', 'extrainfo'].map(a => svc?.getAttribute(a)).filter(Boolean).join(' ')
+      html += `<tr><td class="port">${esc(p.getAttribute('portid'))}/${esc(p.getAttribute('protocol'))}</td>` +
+        `<td class="svc">${esc(svc?.getAttribute('name') || '')}</td><td class="ver">${esc(ver)}</td></tr>`
+    }
+    html += '</tbody></table>'
+  }
   return html
+}
+// rows are arrays of cells; `statusCol` (index) gets colored by HTTP class
+function buildTable(headers, rows, statusCol = -1) {
+  if (!rows.length) return '<div class="empty">Nothing found yet — the scan may still be running, or everything was filtered.</div>'
+  let html = `<div class="dim">${rows.length} result${rows.length === 1 ? '' : 's'}</div>`
+  html += '<table class="out-table"><thead><tr>' + headers.map(h => `<th>${esc(h)}</th>`).join('') + '</tr></thead><tbody>'
+  for (const r of rows) {
+    html += '<tr>' + r.map((c, i) => i === statusCol
+      ? `<td class="st st-${esc(String(c)[0])}">${esc(c)}</td>`
+      : `<td>${esc(c)}</td>`).join('') + '</tr>'
+  }
+  return html + '</tbody></table>'
 }
 function renderFfuf(txt) {
   let data
   try { data = JSON.parse(txt) } catch { return null }
   const rows = (data.results || []).map(r => {
     let display = r.url || r.input?.FUZZ || ''
-    // Vhost fuzzing (-H 'Host: FUZZ...') keeps `url` constant across every
-    // result; the actual discovered subdomain only shows up in `host`.
+    // vhost fuzzing keeps `url` constant; the discovered name is in `host`
     if (r.host) {
       try {
         if (new URL(r.url).hostname !== r.host) display = r.host
@@ -470,17 +669,17 @@ function renderFfuf(txt) {
     }
     return [r.status, r.length, display]
   })
-  return buildTable(['Status', 'Size', 'URL / Host'], rows)
+  return buildTable(['Status', 'Size', 'URL / Host'], rows, 0)
 }
 function renderGobuster(txt) {
   const re = /^(.+?)\s+\(Status:\s*(\d+)\)\s*\[Size:\s*(\d+)\]/
   const rows = []
   for (const line of txt.split('\n')) {
     const m = line.match(re)
-    if (m) rows.push([m[1].replace(/^Found:\s*/, '').trim(), m[2], m[3]])
+    if (m) rows.push([m[2], m[3], m[1].replace(/^Found:\s*/, '').trim()])
   }
   if (!rows.length) return null
-  return buildTable(['Found', 'Status', 'Size'], rows)
+  return buildTable(['Status', 'Size', 'Found'], rows, 0)
 }
 function renderFerox(txt) {
   const re = /^(\d{3})\s+\S+\s+\d+l\s+\d+w\s+(\d+)c\s+(\S+)/
@@ -490,87 +689,101 @@ function renderFerox(txt) {
     if (m) rows.push([m[1], m[2], m[3]])
   }
   if (!rows.length) return null
-  return buildTable(['Status', 'Size', 'URL'], rows)
+  return buildTable(['Status', 'Size', 'URL'], rows, 0)
 }
 function renderPrefixFindings(txt, matchFn) {
   const lines = txt.split('\n').map(l => l.trim()).filter(matchFn)
   if (!lines.length) return null
-  return '<ul class="finding-list">' + lines.map(l => `<li>${esc(l)}</li>`).join('') + '</ul>'
+  return '<ul class="finding-list">' +
+    lines.map(l => `<li${l.startsWith('[!]') ? ' class="warn"' : ''}>${esc(l)}</li>`).join('') + '</ul>'
 }
 function renderWhatweb(txt) {
   const tags = [...txt.matchAll(/([A-Za-z][\w\-]*)\[([^\]]*)\]/g)]
   if (!tags.length) return null
-  return '<ul class="finding-list">' + tags.map(([, k, v]) => `<li><b>${esc(k)}</b>: ${esc(v || '(detected)')}</li>`).join('') + '</ul>'
+  return '<ul class="finding-list">' + tags.map(([, k, v]) => `<li><b>${esc(k)}</b>  ${esc(v || '(detected)')}</li>`).join('') + '</ul>'
 }
-function showOutputView(view, summary, raw) {
-  if (!summary) { view.textContent = raw; return }
-  view.innerHTML = summary + '<div class="out-toggle"><a href="#">Show raw output</a></div>'
-  view.querySelector('.out-toggle a').onclick = (e) => {
-    e.preventDefault()
-    view.textContent = raw
-    const back = document.createElement('div')
-    back.className = 'out-toggle'
-    back.innerHTML = '<a href="#">Show summary</a>'
-    back.querySelector('a').onclick = (e2) => { e2.preventDefault(); showOutputView(view, summary, raw) }
-    view.appendChild(back)
-  }
-}
-document.getElementById('btn-refresh-output').onclick = refreshOutput
-ipcRenderer.on('output-changed', refreshOutput)
 
 // ---------- NOTES / LOOT TABS ----------
 let activeTab = 'output'
-const tabButtons = {
-  output: document.getElementById('tab-output'),
-  notes: document.getElementById('tab-notes'),
-  loot: document.getElementById('tab-loot')
-}
-const outputListEl = document.getElementById('output-list')
-const outputViewEl = document.getElementById('output-view')
-const notesView = document.getElementById('notes-view')
-const lootView = document.getElementById('loot-view')
-const saveBar = document.getElementById('note-save-bar')
-const refreshOutputBtn = document.getElementById('btn-refresh-output')
-const savedMsg = document.getElementById('note-saved-msg')
+const tabButtons = { output: $('tab-output'), notes: $('tab-notes'), loot: $('tab-loot') }
+const notesView = $('notes-view')
+const lootView = $('loot-view')
+const savedMsg = $('note-saved-msg')
+let noteTimer = null
+let noteDirty = false
 
 async function loadNote(type) {
-  const txt = await ipcRenderer.invoke('read-note', type)
-  ;(type === 'notes' ? notesView : lootView).value = txt
+  const el = type === 'notes' ? notesView : lootView
+  el.value = await api.invoke('read-note', type)
+  el.disabled = !target.workspace
+  if (!target.workspace) el.value = ''
+  el.placeholder = target.workspace
+    ? (type === 'notes' ? 'Notes for this box…  (autosaves · Ctrl+S)' : 'Creds, hashes, flags…  (autosaves · Ctrl+S)')
+    : 'Pick or create a box first.'
 }
-function switchTab(tab) {
+// saves whatever's pending NOW — called before anything that changes which
+// box the main process writes to, so text never lands in the wrong box
+async function flushNote() {
+  clearTimeout(noteTimer)
+  if (!noteDirty || activeTab === 'output') { noteDirty = false; return }
+  noteDirty = false
+  const text = (activeTab === 'notes' ? notesView : lootView).value
+  await api.invoke('write-note', activeTab, text)
+  savedMsg.classList.remove('hidden')
+  setTimeout(() => savedMsg.classList.add('hidden'), 1200)
+}
+for (const el of [notesView, lootView]) {
+  el.addEventListener('keydown', (e) => {
+    if (e.ctrlKey && e.key.toLowerCase() === 's') { e.preventDefault(); noteDirty = true; flushNote() }
+  })
+  el.addEventListener('input', () => {
+    noteDirty = true
+    clearTimeout(noteTimer)
+    noteTimer = setTimeout(flushNote, 700)
+  })
+}
+async function switchTab(tab) {
+  await flushNote()
   activeTab = tab
   for (const [k, btn] of Object.entries(tabButtons)) btn.classList.toggle('active', k === tab)
-  outputListEl.classList.toggle('hidden', tab !== 'output')
-  outputViewEl.classList.toggle('hidden', tab !== 'output')
+  $('output-pane').classList.toggle('hidden', tab !== 'output')
   notesView.classList.toggle('hidden', tab !== 'notes')
   lootView.classList.toggle('hidden', tab !== 'loot')
-  refreshOutputBtn.classList.toggle('hidden', tab !== 'output')
-  saveBar.classList.toggle('hidden', tab === 'output')
-  if (tab !== 'output') loadNote(tab)
+  $('btn-refresh-output').classList.toggle('hidden', tab !== 'output')
+  if (tab !== 'output') { await loadNote(tab); (tab === 'notes' ? notesView : lootView).focus() }
 }
 tabButtons.output.onclick = () => switchTab('output')
 tabButtons.notes.onclick = () => switchTab('notes')
 tabButtons.loot.onclick = () => switchTab('loot')
-document.getElementById('btn-save-note').onclick = async () => {
-  if (activeTab === 'output') return
-  const text = (activeTab === 'notes' ? notesView : lootView).value
-  await ipcRenderer.invoke('write-note', activeTab, text)
-  savedMsg.classList.remove('hidden')
-  setTimeout(() => savedMsg.classList.add('hidden'), 1200)
-}
+window.addEventListener('beforeunload', () => { if (noteDirty) flushNote() })
+
+// ---------- KEYBOARD ----------
+document.addEventListener('keydown', (e) => {
+  // plain Ctrl+K is kill-line in the shell, so the shortcut needs Shift
+  if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'k') {
+    e.preventDefault(); filterInput.focus(); filterInput.select()
+  } else if (e.key === 'Escape') {
+    for (const m of document.querySelectorAll('.modal')) m.classList.add('hidden')
+    setupDropdown.classList.add('hidden')
+  }
+})
 
 // ---------- INIT ----------
 ;(async () => {
+  const info = await api.invoke('app-info')
+  shellName = info.shell || 'shell'
+  $('sb-version').textContent = `v${info.version} · electron ${info.electron}`
   checkVpn()
   await loadTarget()
   await loadWorkspaces()
   if (target.workspace) {
-    const res = await ipcRenderer.invoke('set-workspace', target.workspace)
+    const res = await api.invoke('set-workspace', target.workspace)
     currentOutDir = res.outputDir
   }
-  updateDeleteBtn()
+  updateDeleteBtn(); updateTermTitle(); clearOutputView()
   await checkEnv()
   startEnvPolling()
   await loadExamples()
   refreshOutput()
+  term.focus()
 })()

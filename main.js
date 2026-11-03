@@ -32,10 +32,22 @@ function createWindow() {
   win = new BrowserWindow({
     width: 1500,
     height: 950,
-    backgroundColor: '#15151b',
-    webPreferences: { nodeIntegration: true, contextIsolation: false }
+    minWidth: 1100,
+    minHeight: 640,
+    title: 'Red Dash',
+    backgroundColor: '#0b0b0f',
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(ROOT, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true
+    }
   })
-  win.loadFile(path.join('ui', 'index.html'))
+  // the UI is a single local page — never navigate away or open popups
+  win.webContents.on('will-navigate', (e) => e.preventDefault())
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  win.loadFile(path.join(ROOT, 'ui', 'index.html'))
 }
 app.whenReady().then(createWindow)
 app.on('window-all-closed', () => app.quit())
@@ -75,7 +87,7 @@ ipcMain.handle('get-examples', () => {
   const starter = readJson(path.join(LIB, 'examples.json'), { examples: [] })
   const mine = readJson(MY, { examples: [] })
   const s = (starter.examples || []).map(x => ({ ...x, mine: false }))
-  const m = (mine.examples || []).map(x => ({ ...x, mine: true }))
+  const m = (mine.examples || []).map((x, i) => ({ ...x, mine: true, mineIndex: i }))
   return [...s, ...m]
 })
 ipcMain.handle('add-example', (ev, ex) => {
@@ -85,6 +97,21 @@ ipcMain.handle('add-example', (ev, ex) => {
   fs.writeFileSync(MY, JSON.stringify(mine, null, 2))
   return true
 })
+// `index` is the position within my_examples.json (the renderer tracks it)
+ipcMain.handle('delete-example', (ev, index) => {
+  const mine = readJson(MY, { examples: [] })
+  mine.examples = mine.examples || []
+  if (!Number.isInteger(index) || index < 0 || index >= mine.examples.length) return false
+  mine.examples.splice(index, 1)
+  fs.writeFileSync(MY, JSON.stringify(mine, null, 2))
+  return true
+})
+
+ipcMain.handle('app-info', () => ({
+  version: require('./package.json').version,
+  electron: process.versions.electron,
+  shell: path.basename(process.env.SHELL || 'bash')
+}))
 
 // ---- target ----
 ipcMain.handle('get-target', () => state)
@@ -118,12 +145,21 @@ function ensureDirs(dir) {
   if (!fs.existsSync(path.join(dir, 'loot.md'))) fs.writeFileSync(path.join(dir, 'loot.md'), '# Loot\n')
 }
 
+// box names become folder names and get typed into the shell (cd), so only
+// allow a safe character set — and never "." / ".." which would escape workspaces/
+function safeName(name) {
+  const safe = String(name || '').replace(/[^a-zA-Z0-9_\-\.]/g, '_')
+  return /^\.+$/.test(safe) ? '' : safe
+}
+
 ipcMain.handle('new-workspace', (ev, name) => {
-  const safe = String(name).replace(/[^a-zA-Z0-9_\-\.]/g, '_')
+  const safe = safeName(name)
+  if (!safe) return ''
   ensureDirs(path.join(WORKSPACES, safe))
   return safe
 })
 ipcMain.handle('set-workspace', (ev, name) => {
+  name = safeName(name)
   state.workspace = name
   saveState(state)
   const dir = workspaceDir()
@@ -133,7 +169,8 @@ ipcMain.handle('set-workspace', (ev, name) => {
   return { workspace: name, outputDir: outputDir() }
 })
 ipcMain.handle('delete-workspace', (ev, name) => {
-  const safe = String(name).replace(/[^a-zA-Z0-9_\-\.]/g, '_')
+  const safe = safeName(name)
+  if (!safe) return false
   try { fs.rmSync(path.join(WORKSPACES, safe), { recursive: true, force: true }) } catch {}
   if (state.workspace === safe) {
     state.workspace = ''
@@ -169,15 +206,24 @@ function listOutputFiles() {
     for (const d of fs.readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, d.name)
       if (d.isDirectory()) walk(full)
-      else out.push({ name: path.relative(base, full), path: full, mtime: fs.statSync(full).mtimeMs })
+      else {
+        const st = fs.statSync(full)
+        out.push({ name: path.relative(base, full), mtime: st.mtimeMs, size: st.size })
+      }
     }
   }
   try { walk(base) } catch {}
   return out.sort((a, b) => b.mtime - a.mtime)
 }
 ipcMain.handle('list-output', () => listOutputFiles())
-ipcMain.handle('read-output', (ev, filePath) => {
-  try { return fs.readFileSync(filePath, 'utf8') } catch (e) { return 'Could not read file: ' + e.message }
+// takes a path relative to the box's output folder and refuses anything that
+// resolves outside it, so the UI can't be used to read arbitrary files
+ipcMain.handle('read-output', (ev, rel) => {
+  const base = outputDir()
+  if (!base) return 'No box selected.'
+  const full = path.resolve(base, String(rel))
+  if (!full.startsWith(base + path.sep)) return 'Refused: path is outside this box.'
+  try { return fs.readFileSync(full, 'utf8') } catch (e) { return 'Could not read file: ' + e.message }
 })
 function startWatching() {
   try { if (outputWatcher) outputWatcher.close() } catch {}
