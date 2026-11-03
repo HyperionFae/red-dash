@@ -38,7 +38,7 @@ Runs on any Linux distro. Install hints adapt to your package manager (pacman, a
 Requires Node.js and npm.
 
 ```bash
-git clone https://github.com/Basilisk-king/red-dash.git
+git clone https://github.com/HyperionFae/red-dash.git
 cd red-dash
 npm install
 npm start
