@@ -20,13 +20,14 @@ Runs on any Linux distro. Install hints adapt to your package manager (pacman, a
 ## Features
 
 - Real terminal in the centre (xterm.js + node-pty)
-- Target bar — set the IP/domain once, it fills `{TARGET}` / `{DOMAIN}` in every example
-- Tool examples panel — click to drop a command into the terminal (nmap, ffuf, gobuster, feroxbuster, nikto, wpscan, smb, netexec, impacket, and more)
-- Add your own examples — saved separately so updates never overwrite them
-- Output panel — scan results appear automatically, parsed into clean tables (nmap, ffuf, gobuster, feroxbuster, nikto, wpscan, whatweb), with a raw-output toggle
-- Notes + Loot tabs — per box, saved to disk
+- Target bar — set the IP/domain once (Enter works), it fills `{TARGET}` / `{DOMAIN}` in every example
+- Playbook panel — click to drop a command into the terminal (nmap, ffuf, gobuster, feroxbuster, nikto, wpscan, smb, netexec, impacket, and more). Filter with Ctrl+Shift+K, collapse groups, unfilled placeholders highlighted, tools you haven't installed flagged
+- Add your own examples — saved separately so updates never overwrite them; delete them with the × on hover
+- Output panel — scan results appear automatically, parsed into clean tables (nmap, ffuf, gobuster, feroxbuster, nikto, wpscan, whatweb), with a raw-output toggle. The open file re-renders live while a scan is still writing
+- Notes + Loot tabs — per box, autosaved to disk (Ctrl+S to save now)
+- Resizable side panels — drag the dividers, double-click to reset
 - Workspaces — each box kept separate (output, notes, loot)
-- Setup check — finds your tools and SecLists, shows install commands for what's missing, clears itself as you install
+- Setup check (status bar) — finds your tools and SecLists, shows install commands for what's missing, clears itself as you install
 - VPN status — shows your HTB/THM VPN IP, click to copy
 - Opens with no terminal attached (app launcher or detached script)
 
@@ -40,11 +41,10 @@ Requires Node.js and npm.
 git clone https://github.com/Basilisk-king/red-dash.git
 cd red-dash
 npm install
-npx electron-rebuild
 npm start
 ```
 
-`electron-rebuild` builds the terminal engine (node-pty) for Electron — don't skip it.
+`npm install` also downloads Electron and builds the terminal engine (node-pty) for it. If the terminal ever fails to start after an upgrade, run `npm run setup` to rebuild it.
 
 ---
 
@@ -94,11 +94,10 @@ Electron, node-pty, xterm.js. No framework, no build step — plain HTML/CSS/JS.
 
 This is a **local, single-user tool** for your own machine. It is not hardened for untrusted input and is not meant to be exposed to a network or run for other users.
 
-- It runs with Electron `nodeIntegration` on / `contextIsolation` off — a deliberate, common choice for a local tool, but the less-sandboxed pattern.
+- The UI runs sandboxed: `contextIsolation` on, `nodeIntegration` off, `sandbox` on, with a strict Content-Security-Policy. It can only reach the main process through a fixed list of IPC channels exposed by `preload.js`.
 - Scan output shown in the UI is HTML-escaped before display, so malicious content in a target's response cannot run in the app window.
+- The output viewer only reads files inside the current box's output folder, and box names are restricted to a safe character set.
 - Only run it on engagements you are authorised to perform.
-
-A future hardening pass (context isolation + a preload bridge) is planned as a separate improvement.
 
 ---
 
