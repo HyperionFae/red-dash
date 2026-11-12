@@ -6,15 +6,21 @@ const os = require('os')
 const { execSync, spawn } = require('child_process')
 
 // ---- paths ----
+// ROOT holds the app's own files (read-only once packaged — an AppImage is a
+// read-only mount). DATA holds everything the user creates: boxes, state and
+// their own commands. Running from a git checkout keeps DATA = ROOT, exactly
+// like before; an installed build (AppImage / .deb) uses ~/.config/red-dash.
 const ROOT = __dirname
-const LIB = path.join(ROOT, 'library')
-const WORKSPACES = path.join(ROOT, 'workspaces')
-const STATE_FILE = path.join(ROOT, 'state.json')
+const DATA = app.isPackaged ? path.join(app.getPath('appData'), 'red-dash') : ROOT
+const LIB = path.join(ROOT, 'library')          // shipped examples.json
+const MY_LIB = path.join(DATA, 'library')       // the user's my_examples.json
+const WORKSPACES = path.join(DATA, 'workspaces')
+const STATE_FILE = path.join(DATA, 'state.json')
 
-for (const d of [LIB, WORKSPACES]) {
+for (const d of [MY_LIB, WORKSPACES]) {
   if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true })
 }
-const MY = path.join(LIB, 'my_examples.json')
+const MY = path.join(MY_LIB, 'my_examples.json')
 if (!fs.existsSync(MY)) fs.writeFileSync(MY, JSON.stringify({ examples: [] }, null, 2))
 
 // ---- state ----

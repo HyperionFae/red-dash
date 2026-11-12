@@ -1,12 +1,15 @@
 {
   "name": "red-dash",
   "version": "0.4.0",
-  "description": "Visual red team cockpit — terminal in the middle, tools and output around you",
+  "description": "Visual red team cockpit — terminal in the middle, your tools and output around you",
+  "desktopName": "red-dash.desktop",
+  "homepage": "https://github.com/HyperionFae/red-dash",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "postinstall": "node node_modules/electron/install.js && electron-rebuild",
-    "setup": "electron-rebuild"
+    "setup": "electron-rebuild",
+    "dist": "electron-builder --linux --publish never"
   },
   "keywords": [
     "red-team",
@@ -24,9 +27,60 @@
     "url": "https://github.com/HyperionFae/red-dash.git"
   },
   "type": "commonjs",
+  "build": {
+    "appId": "io.github.hyperionfae.reddash",
+    "productName": "Red Dash",
+    "executableName": "red-dash",
+    "artifactName": "red-dash-${version}-${arch}.${ext}",
+    "files": [
+      "main.js",
+      "preload.js",
+      "ui/**",
+      "library/examples.json",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/node-pty/**"
+    ],
+    "directories": {
+      "buildResources": "build",
+      "output": "dist"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Development",
+      "icon": "build/icon.png",
+      "synopsis": "Visual red team cockpit",
+      "description": "Terminal in the middle, your recon tools, parsed scan output, notes, loot and creds around it.",
+      "maintainer": "HyperionFae <199559079+HyperionFae@users.noreply.github.com>",
+      "desktop": {
+        "entry": {
+          "Name": "Red Dash",
+          "Comment": "Visual red team cockpit",
+          "Categories": "Development;Security;",
+          "Keywords": "pentest;htb;tryhackme;nmap;"
+        }
+      },
+      "syncDesktopName": true
+    },
+    "deb": {
+      "depends": [
+        "libnss3",
+        "libgtk-3-0 | libgtk-3-0t64",
+        "libxss1",
+        "libasound2 | libasound2t64",
+        "libnotify4",
+        "xdg-utils"
+      ]
+    }
+  },
   "devDependencies": {
     "@electron/rebuild": "^4.2.1",
-    "electron": "^45.3.1"
+    "electron": "^45.3.1",
+    "electron-builder": "^26.18.0"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
