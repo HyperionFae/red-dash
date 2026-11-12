@@ -10,6 +10,9 @@
   - `LM:NT` pairs are accepted — `<hash>` uses the NT half.
 - Playbook: pass-the-hash commands (netexec, impacket psexec / secretsdump, evil-winrm), netexec WinRM login and password spray.
 
+- **Downloads**: AppImage and .deb packages, built by GitHub Actions and attached to each release. Installed builds keep data in `~/.config/red-dash`.
+- App icon, demo GIF, new README.
+
 ### Fixed
 - Switching box while a playbook command sat un-run at the prompt glued `cd "<box>"` onto it and **ran it** with junk arguments. The prompt line is now cleared first.
 
