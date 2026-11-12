@@ -933,6 +933,20 @@ function addCred() {
 $('cred-add').onclick = addCred
 credInputs.forEach(i => i.addEventListener('keydown', (e) => { if (e.key === 'Enter') addCred() }))
 
+// ---------- FX (glow / scanlines / motion) ----------
+function applyFx(on) {
+  document.body.classList.toggle('fx-off', !on)
+  $('btn-fx').classList.toggle('on', on)
+  $('btn-fx').textContent = on ? 'FX' : 'FX off'
+}
+applyFx(prefs.get('fx', true))
+$('btn-fx').onclick = () => {
+  const on = document.body.classList.contains('fx-off')
+  prefs.set('fx', on)
+  applyFx(on)
+  toast(on ? 'Effects on' : 'Effects off')
+}
+
 // ---------- KEYBOARD ----------
 document.addEventListener('keydown', (e) => {
   // plain Ctrl+K is kill-line in the shell, so the shortcut needs Shift

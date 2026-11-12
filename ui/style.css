@@ -449,3 +449,214 @@ body.resizing #terminal { pointer-events: none; }
 .cred-actions { display: none; gap: 4px; margin-top: 6px; padding-left: 16px; }
 .cred:hover .cred-actions { display: flex; }
 .ex-cmd .filled.cred-fill { color: var(--violet); white-space: nowrap; }
+
+/* =====================================================================
+   CYBER HUD THEME
+   Layered on top of the base styles above. Everything decorative lives
+   behind `body:not(.fx-off)` or in pseudo-elements, so the FX toggle in
+   the status bar (and prefers-reduced-motion) can switch it all off.
+   ===================================================================== */
+:root {
+  --bg: #07070b;
+  --panel: rgba(14, 14, 21, .78);
+  --panel2: rgba(22, 22, 32, .72);
+  --raised: rgba(32, 24, 34, .85);
+  --line: rgba(255, 59, 92, .10);
+  --line2: rgba(255, 59, 92, .22);
+  --neon: 0 0 6px rgba(255, 59, 92, .55), 0 0 18px rgba(255, 59, 92, .25);
+  --neon-text: 0 0 6px rgba(255, 59, 92, .7), 0 0 16px rgba(255, 59, 92, .35);
+  --cut: 7px;   /* size of the angled corners */
+}
+
+/* --- backdrop: red haze + drifting grid --- */
+body {
+  background:
+    radial-gradient(1200px 600px at 15% -10%, rgba(255, 59, 92, .10), transparent 60%),
+    radial-gradient(900px 500px at 110% 110%, rgba(90, 209, 230, .06), transparent 60%),
+    var(--bg);
+}
+body::before {
+  content: ''; position: fixed; inset: -40px; z-index: 0; pointer-events: none;
+  background-image:
+    linear-gradient(rgba(255, 59, 92, .07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 59, 92, .07) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: radial-gradient(ellipse at center, #000 30%, transparent 85%);
+  animation: grid-drift 40s linear infinite;
+}
+@keyframes grid-drift { to { transform: translate(40px, 40px); } }
+/* CRT scanlines over everything — very faint so text stays crisp */
+body::after {
+  content: ''; position: fixed; inset: 0; z-index: 100; pointer-events: none;
+  background: repeating-linear-gradient(0deg, rgba(0, 0, 0, .16) 0 1px, transparent 1px 3px);
+  mix-blend-mode: multiply; opacity: .55;
+}
+#topbar, #middle, #statusbar { position: relative; z-index: 1; }
+
+/* --- glass panels --- */
+#topbar, .panel, #statusbar {
+  backdrop-filter: blur(10px) saturate(130%);
+}
+#topbar { background: linear-gradient(180deg, rgba(20, 14, 20, .9), rgba(12, 12, 18, .82)); }
+#topbar::after {
+  height: 1px; bottom: -1px;
+  background: linear-gradient(90deg, transparent, var(--red) 20%, var(--red-glow) 50%, transparent);
+  box-shadow: var(--neon);
+}
+/* a light sweep travelling along the top bar's edge */
+#topbar::before {
+  content: ''; position: absolute; bottom: -1px; height: 1px; width: 180px; left: -200px;
+  background: linear-gradient(90deg, transparent, #fff, transparent); opacity: .8;
+  animation: sweep 6s ease-in-out infinite;
+}
+@keyframes sweep { 0% { left: -200px; } 60%, 100% { left: 100%; } }
+
+/* HUD corner brackets on the side panels */
+.panel { position: relative; }
+.panel::before, .panel::after {
+  content: ''; position: absolute; width: 12px; height: 12px; pointer-events: none; z-index: 2;
+  border: 0 solid var(--red); opacity: .7;
+}
+.panel::before { top: 0; left: 0; border-top-width: 1px; border-left-width: 1px; }
+.panel::after { bottom: 0; right: 0; border-bottom-width: 1px; border-right-width: 1px; }
+.resizer { background: transparent; position: relative; }
+.resizer::after {
+  content: ''; position: absolute; top: 0; bottom: 0; left: 1px; width: 1px;
+  background: linear-gradient(180deg, transparent, var(--line2) 15%, var(--line2) 85%, transparent);
+}
+.resizer:hover::after, .resizer.dragging::after { background: var(--red); box-shadow: var(--neon); }
+.resizer:hover, .resizer.dragging { background: transparent; }
+
+/* --- brand --- */
+.brand-text { text-shadow: 0 0 10px rgba(255, 255, 255, .15); }
+.brand-text b { text-shadow: var(--neon-text); animation: flicker 7s infinite; }
+.brand-mark { animation: mark-pulse 2.4s ease-in-out infinite; }
+@keyframes flicker {
+  0%, 92%, 100% { opacity: 1; }
+  93% { opacity: .4; } 94% { opacity: 1; } 96% { opacity: .6; } 97% { opacity: 1; }
+}
+@keyframes mark-pulse { 50% { filter: drop-shadow(0 0 12px var(--red)); } }
+
+/* --- angled corners on segments, buttons, cards --- */
+/* (clip-path also clips box-shadow, so only things that don't glow outward get cut corners) */
+.seg, .pill, .search, .icon-btn, .cred-form input {
+  border-radius: 0;
+  clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
+}
+.seg { background: rgba(5, 5, 9, .7); }
+.seg:focus-within { border-color: var(--red); box-shadow: inset 0 0 12px rgba(255, 59, 92, .12); }
+.seg-label { background: rgba(255, 59, 92, .06); color: var(--red); text-shadow: 0 0 6px rgba(255, 59, 92, .5); }
+#in-target { text-shadow: var(--neon-text); }
+#in-ports { text-shadow: 0 0 8px rgba(90, 209, 230, .5); }
+
+button:not(.ghost, .danger, .tab, .seg-btn, .pill, .icon-btn, #btn-setup-toggle, #btn-fx) {
+  background: linear-gradient(180deg, #ff5a75, var(--red));
+  box-shadow: var(--neon);
+}
+button:not(.ghost, .danger, .tab, .seg-btn, .pill, .icon-btn, #btn-setup-toggle, #btn-fx):hover {
+  filter: brightness(1.15); box-shadow: 0 0 10px var(--red), 0 0 28px rgba(255, 59, 92, .45);
+}
+
+button:not(.tab), .ex, .cred, .modal-box, #toast, #setup-dropdown, .chip, .count { border-radius: 0; }
+
+/* --- panel heads --- */
+.panel-head { background: linear-gradient(90deg, rgba(255, 59, 92, .07), transparent 70%); }
+.panel-title { color: var(--text); text-shadow: 0 0 8px rgba(255, 255, 255, .2); }
+.panel-title::before { content: '// '; color: var(--red); }
+
+/* --- playbook --- */
+.tool-title { text-shadow: 0 0 8px rgba(179, 146, 240, .45); }
+.tool-title::before { content: '▸'; color: var(--red); font-size: 9px; margin-right: -2px; }
+.tool-title .caret { display: none; }
+.tool-group.collapsed .tool-title::before { content: '▹'; }
+.ex {
+  background: linear-gradient(90deg, rgba(255, 59, 92, .05), rgba(22, 22, 32, .7) 40%);
+  transition: transform .14s ease, box-shadow .14s ease, border-color .14s, background .14s;
+}
+.ex:hover {
+  transform: translateX(3px);
+  background: linear-gradient(90deg, rgba(255, 59, 92, .14), rgba(32, 24, 34, .85) 55%);
+  box-shadow: -4px 0 14px -2px rgba(255, 59, 92, .55), inset 0 0 18px rgba(255, 59, 92, .06);
+}
+.ex.sent { box-shadow: -3px 0 14px rgba(61, 220, 151, .5); }
+.ex-cmd .var { text-shadow: 0 0 6px rgba(255, 181, 71, .5); }
+.ex-cmd .filled { text-shadow: 0 0 6px rgba(90, 209, 230, .45); }
+.ex-cmd .filled.cred-fill { text-shadow: 0 0 6px rgba(179, 146, 240, .55); }
+.search:focus-within { box-shadow: 0 0 12px rgba(255, 59, 92, .2); }
+
+/* --- terminal: glowing frame with HUD corners --- */
+#center { background: transparent; position: relative; }
+#term-frame {
+  position: relative; border-radius: 0; overflow: visible;
+  border-color: rgba(255, 59, 92, .25);
+  box-shadow: 0 0 0 1px rgba(255, 59, 92, .05), 0 0 30px rgba(255, 59, 92, .07), 0 20px 50px rgba(0, 0, 0, .6);
+  transition: box-shadow .25s, border-color .25s;
+}
+#term-frame:focus-within {
+  border-color: rgba(255, 59, 92, .55);
+  box-shadow: 0 0 0 1px rgba(255, 59, 92, .15), 0 0 40px rgba(255, 59, 92, .18), 0 20px 50px rgba(0, 0, 0, .6);
+}
+#term-frame::before, #term-frame::after {
+  content: ''; position: absolute; width: 18px; height: 18px; pointer-events: none;
+  border: 0 solid var(--red); filter: drop-shadow(0 0 4px var(--red));
+}
+#term-frame::before { top: -5px; left: -5px; border-top-width: 2px; border-left-width: 2px; }
+#term-frame::after { bottom: -5px; right: -5px; border-bottom-width: 2px; border-right-width: 2px; }
+#term-header {
+  background: linear-gradient(90deg, rgba(255, 59, 92, .12), rgba(14, 14, 21, .9) 45%);
+  border-bottom-color: rgba(255, 59, 92, .2);
+}
+.term-dots i { border-radius: 0; transform: rotate(45deg); width: 7px; height: 7px; }
+.term-target { text-shadow: var(--neon-text); }
+#terminal { overflow: hidden; }
+
+/* --- right panel --- */
+.tab.active { text-shadow: 0 0 8px rgba(255, 255, 255, .35); box-shadow: inset 0 -2px 0 var(--red), 0 6px 14px -8px var(--red); }
+.out-file.active { box-shadow: inset 2px 0 0 var(--red), -2px 0 10px rgba(255, 59, 92, .35); }
+.nmap-host { text-shadow: var(--neon-text); }
+.nmap-host::before { animation: mark-pulse 1.6s infinite; }
+.out-table tr { transition: background .12s; }
+.out-table tr:hover td { background: rgba(255, 59, 92, .06); }
+.out-table td.port { text-shadow: 0 0 6px rgba(90, 209, 230, .45); }
+.note-editor { background: transparent; }
+.cred.active { box-shadow: 0 0 14px rgba(179, 146, 240, .25), inset 0 0 20px rgba(179, 146, 240, .06); }
+.tab-count { box-shadow: 0 0 8px rgba(179, 146, 240, .7); }
+
+/* --- status bar --- */
+#statusbar {
+  background: linear-gradient(0deg, rgba(20, 14, 20, .92), rgba(12, 12, 18, .82));
+  border-top: 1px solid rgba(255, 59, 92, .2);
+}
+#sb-version::before { content: '◆ '; color: var(--red); }
+#btn-fx { background: transparent; border: 1px solid var(--line2); color: var(--dim); padding: 0 6px; height: 18px; font-size: 10px; letter-spacing: 1px; font-weight: 700; }
+#btn-fx:hover { color: var(--text); filter: none; }
+#btn-fx.on { color: var(--red); border-color: var(--red); text-shadow: var(--neon-text); }
+
+/* --- popups --- */
+.modal { background: rgba(4, 4, 8, .6); backdrop-filter: blur(6px); }
+.modal-box { background: rgba(16, 14, 22, .92); box-shadow: 0 0 40px rgba(255, 59, 92, .15), 0 24px 60px rgba(0, 0, 0, .6); }
+.modal-box h3::before { content: '◢ '; color: var(--red); text-shadow: var(--neon-text); }
+#toast { background: rgba(18, 16, 24, .92); backdrop-filter: blur(8px); box-shadow: 0 0 18px rgba(61, 220, 151, .2), 0 10px 30px rgba(0, 0, 0, .5); }
+
+/* --- boot-up: panels slide in once on launch --- */
+#topbar { animation: boot-down .5s ease-out both; }
+#left { animation: boot-in-l .55s .1s ease-out both; }
+#center { animation: boot-fade .6s .2s ease-out both; }
+#right { animation: boot-in-r .55s .15s ease-out both; }
+#statusbar { animation: boot-up .5s .25s ease-out both; }
+@keyframes boot-down { from { transform: translateY(-100%); opacity: 0; } }
+@keyframes boot-up { from { transform: translateY(100%); opacity: 0; } }
+@keyframes boot-in-l { from { transform: translateX(-24px); opacity: 0; } }
+@keyframes boot-in-r { from { transform: translateX(24px); opacity: 0; } }
+@keyframes boot-fade { from { opacity: 0; filter: blur(4px); } }
+
+::-webkit-scrollbar-thumb { background: rgba(255, 59, 92, .25); border-radius: 0; }
+::-webkit-scrollbar-thumb:hover { background: var(--red); }
+
+/* --- FX off (status bar toggle) or reduced motion: keep the look, drop the effects --- */
+body.fx-off::before, body.fx-off::after, body.fx-off #topbar::before { display: none; }
+body.fx-off *, body.fx-off *::before, body.fx-off *::after { animation: none !important; transition: none !important; }
+body.fx-off #topbar, body.fx-off .panel, body.fx-off #statusbar, body.fx-off #toast, body.fx-off .modal { backdrop-filter: none; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}

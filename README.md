@@ -29,6 +29,7 @@ Runs on any Linux distro. Install hints adapt to your package manager (pacman, a
 - Ports bar — open ports from your nmap scans fill `{PORTS}` automatically (type your own to override, AUTO to go back)
 - Creds tab — save users, passwords and NT hashes per box; click one to fill `<user>` `<pass>` `<hash>` across the playbook. Passwords are masked on screen and shell-quoted when sent
 - Notes + Loot tabs — per box, autosaved to disk (Ctrl+S to save now)
+- Cyber HUD look — glow, glass panels, scanlines; the FX button in the status bar turns effects off
 - Resizable side panels — drag the dividers, double-click to reset
 - Workspaces — each box kept separate (output, notes, loot)
 - Setup check (status bar) — finds your tools and SecLists, shows install commands for what's missing, clears itself as you install

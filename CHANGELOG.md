@@ -3,6 +3,7 @@
 ## 0.4.0
 
 ### Added
+- **Cyber HUD look** — neon glow, glass panels, HUD corner brackets, angled inputs, drifting grid backdrop, faint CRT scanlines, boot-up animation. **FX** button in the status bar switches the effects off (remembered); `prefers-reduced-motion` is respected.
 - **Ports bar** — open TCP ports from the box's nmap XML output fill `{PORTS}` automatically and update live while a scan runs. Type your own list to override; **AUTO** switches back.
 - **Creds tab** — store user / password / NT hash / note per box. Click a cred to put it in use: `<user>` `<pass>` `<hash>` fill across the playbook, and the terminal header shows who you are acting as.
   - Passwords are masked in the playbook and cred list; values are shell-quoted when inserted, so special characters (`$`, `'`, `` ` ``, spaces) arrive intact.
