@@ -9,6 +9,11 @@
   - Passwords are masked in the playbook and cred list; values are shell-quoted when inserted, so special characters (`$`, `'`, `` ` ``, spaces) arrive intact.
   - `LM:NT` pairs are accepted — `<hash>` uses the NT half.
 - Playbook: pass-the-hash commands (netexec, impacket psexec / secretsdump, evil-winrm), netexec WinRM login and password spray.
+- **Toolbox** (⚒ in the top bar):
+  - *Reverse shell generator* — pick a type (bash, nc, python3, php, perl, ruby, socat, PowerShell + base64…); LHOST prefills from your VPN IP, LPORT defaults to 4444. Copy or send straight to the terminal, with the matching listener line.
+  - *Hash identifier* — paste a hash, get the likely type with the `hashcat -m` mode and `john --format`, and a one-click **crack** command. Knows MD5/NTLM/LM, the SHA family, bcrypt, *crypt, Kerberos (roast / AS-REP), NetNTLMv2, MySQL and more.
+- **Checklist tab** — each box starts with a default HTB/THM flow (recon → foothold → privesc → flags). Tick steps off (progress bar + a badge on the tab), add your own, or reset to the default.
+- Playbook grew to 74 commands: Active Directory (kerbrute, BloodHound, ldapdomaindump, Kerberos TGT, user/policy dumps), Linux & Windows privesc (sudo -l, SUID, capabilities, linpeas/winPEAS, whoami /priv), and pivoting (SSH SOCKS, sshuttle, chisel, ligolo).
 
 - **Downloads**: AppImage and .deb packages, built by GitHub Actions and attached to each release. Installed builds keep data in `~/.config/red-dash`.
 - App icon, demo GIF, new README.

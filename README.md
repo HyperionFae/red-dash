@@ -27,8 +27,9 @@ Stop digging through folders, re-running scans just to look at the results again
 
 **Run**
 - 🖥️ **Real terminal** in the centre: your own shell, your own tools
-- 📖 **Playbook** of 50+ ready commands: click one, it lands in the terminal with your target filled in, you press Enter
+- 📖 **Playbook** of 70+ ready commands (recon, web, SMB/AD, privesc, pivoting): click one, it lands in the terminal with your target filled in, you press Enter
 - 🎯 **Target bar**: set the IP / domain once, every command updates
+- 🧰 **Toolbox**: reverse-shell generator (LHOST from your VPN, copy or send to terminal) and a hash identifier (type + `hashcat -m` mode + one-click crack)
 - ➕ **Your own commands**: add them in one click; updates never overwrite them
 
 **See**
@@ -37,7 +38,8 @@ Stop digging through folders, re-running scans just to look at the results again
 - 🔑 **Creds tab**: save users, passwords and NT hashes; click one and every login command fills itself in (pass-the-hash too). Passwords stay masked on screen
 
 **Keep track**
-- 📦 **One box per target**: output, notes, loot and creds kept separate
+- 📦 **One box per target**: output, notes, loot, creds and checklist kept separate
+- ✔️ **Checklist**: each box starts with an HTB/THM flow (recon → foothold → privesc → flags); tick it off or make your own
 - 📝 **Notes + Loot** tabs, autosaved
 - ✅ **Setup check**: finds missing tools and SecLists and gives you the install command for your distro (pacman, apt, dnf, zypper, apk)
 - 🛰️ **VPN status**: shows your HTB/THM VPN IP, click to copy

