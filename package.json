@@ -1,20 +1,32 @@
 {
   "name": "red-dash",
-  "version": "0.3.0",
-  "description": "Visual red team cockpit \u2014 terminal in the middle, tools and output around you",
+  "version": "0.4.0",
+  "description": "Visual red team cockpit — terminal in the middle, tools and output around you",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "postinstall": "node node_modules/electron/install.js && electron-rebuild",
     "setup": "electron-rebuild"
   },
-  "keywords": [],
+  "keywords": [
+    "red-team",
+    "pentest",
+    "htb",
+    "tryhackme",
+    "electron",
+    "terminal",
+    "nmap"
+  ],
   "author": "David",
-  "license": "ISC",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/HyperionFae/red-dash.git"
+  },
   "type": "commonjs",
   "devDependencies": {
     "@electron/rebuild": "^4.2.1",
-    "electron": "^45.2.1"
+    "electron": "^45.3.1"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",

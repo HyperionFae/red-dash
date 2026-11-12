@@ -9,6 +9,7 @@ const INVOKE = [
   'get-target', 'set-target',
   'list-workspaces', 'new-workspace', 'set-workspace', 'delete-workspace',
   'read-note', 'write-note',
+  'read-box', 'write-box', 'get-ports',
   'list-output', 'read-output',
   'check-env', 'check-vpn', 'dismiss-tool', 'undismiss-tools',
   'copy-text', 'app-info'

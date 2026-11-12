@@ -25,6 +25,12 @@
       <button id="btn-set-target" class="seg-btn" title="Set target (Enter)">SET</button>
     </div>
 
+    <div class="seg ports-seg">
+      <span class="seg-label">PORTS</span>
+      <input id="in-ports" placeholder="auto from nmap" spellcheck="false" disabled>
+      <button id="btn-ports-auto" class="seg-btn" title="Fill ports from this box's nmap scans" disabled>AUTO</button>
+    </div>
+
     <div class="spacer"></div>
 
     <button id="vpn-status" class="pill bad" title="Checking VPN…">
@@ -79,6 +85,7 @@
           <button id="tab-output" class="tab active">OUTPUT</button>
           <button id="tab-notes" class="tab">NOTES</button>
           <button id="tab-loot" class="tab">LOOT</button>
+          <button id="tab-creds" class="tab">CREDS<span id="cred-count" class="tab-count hidden"></span></button>
         </span>
         <span class="spacer"></span>
         <span id="note-saved-msg" class="saved hidden">saved</span>
@@ -97,6 +104,18 @@
 
       <textarea id="notes-view" class="hidden note-editor" spellcheck="false" placeholder="Notes for this box…  (autosaves · Ctrl+S)"></textarea>
       <textarea id="loot-view" class="hidden note-editor" spellcheck="false" placeholder="Creds, hashes, flags…  (autosaves · Ctrl+S)"></textarea>
+
+      <div id="creds-pane" class="hidden">
+        <div class="cred-form">
+          <input id="cred-user" placeholder="user" spellcheck="false">
+          <input id="cred-pass" placeholder="password" spellcheck="false">
+          <input id="cred-hash" placeholder="NT hash" spellcheck="false">
+          <input id="cred-note" placeholder="found where? (optional)" spellcheck="false">
+          <button id="cred-add" class="mini">+ ADD</button>
+        </div>
+        <div class="cred-help">Click a cred to <b>use</b> it — it fills <span class="var">&lt;user&gt;</span> <span class="var">&lt;pass&gt;</span> <span class="var">&lt;hash&gt;</span> in the playbook. Click again to stop.</div>
+        <div id="cred-list"></div>
+      </div>
     </aside>
   </main>
 
@@ -174,7 +193,7 @@
       </div>
       <label>Command</label>
       <input id="ex-cmd" placeholder="nmap -sV -oA {OUT}/nmap/x {TARGET}" spellcheck="false">
-      <div class="var-hint">{TARGET} {DOMAIN} {OUT} {WORDLIST} {SUBLIST} {PORTS}</div>
+      <div class="var-hint">{TARGET} {DOMAIN} {OUT} {WORDLIST} {SUBLIST} {PORTS} &lt;user&gt; &lt;pass&gt; &lt;hash&gt;</div>
       <label>Note <span class="faint">(optional)</span></label>
       <input id="ex-note" spellcheck="false">
       <div class="modal-buttons">

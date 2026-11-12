@@ -4,6 +4,8 @@ A visual red team cockpit. Terminal in the middle, your tools and their output a
 
 Runs on any Linux distro. Install hints adapt to your package manager (pacman, apt, dnf, zypper, apk). Developed on Omarchy / Hyprland. Wraps the tools you already use — it does not replace them.
 
+![Red Dash — playbook, terminal and parsed nmap output](docs/screenshot.png)
+
 > ⚠️ **Work in progress.** Red Dash is under active development — features are still being added and things may change. Use it on authorised labs and targets only.
 
 ---
@@ -24,12 +26,16 @@ Runs on any Linux distro. Install hints adapt to your package manager (pacman, a
 - Playbook panel — click to drop a command into the terminal (nmap, ffuf, gobuster, feroxbuster, nikto, wpscan, smb, netexec, impacket, and more). Filter with Ctrl+Shift+K, collapse groups, unfilled placeholders highlighted, tools you haven't installed flagged
 - Add your own examples — saved separately so updates never overwrite them; delete them with the × on hover
 - Output panel — scan results appear automatically, parsed into clean tables (nmap, ffuf, gobuster, feroxbuster, nikto, wpscan, whatweb), with a raw-output toggle. The open file re-renders live while a scan is still writing
+- Ports bar — open ports from your nmap scans fill `{PORTS}` automatically (type your own to override, AUTO to go back)
+- Creds tab — save users, passwords and NT hashes per box; click one to fill `<user>` `<pass>` `<hash>` across the playbook. Passwords are masked on screen and shell-quoted when sent
 - Notes + Loot tabs — per box, autosaved to disk (Ctrl+S to save now)
 - Resizable side panels — drag the dividers, double-click to reset
 - Workspaces — each box kept separate (output, notes, loot)
 - Setup check (status bar) — finds your tools and SecLists, shows install commands for what's missing, clears itself as you install
 - VPN status — shows your HTB/THM VPN IP, click to copy
 - Opens with no terminal attached (app launcher or detached script)
+
+![Creds tab — pick a cred and every login command fills itself in](docs/creds.png)
 
 ---
 
@@ -66,6 +72,7 @@ Or run `./launch.sh` — it detaches, so you can close the terminal and the app 
 2. Make a box (+ New box)
 3. Click an example on the left — it drops into the terminal, you press Enter
 4. Output appears on the right — click a file to read it again, no re-running
+5. Found creds? Add them in the **Creds** tab — every login command fills itself in
 
 ---
 
@@ -79,8 +86,8 @@ Auto-filled variables:
 - `{DOMAIN}` — target domain
 - `{OUT}` — the current box's output folder
 - `{WORDLIST}` / `{SUBLIST}` — found automatically if SecLists is installed
-
-`<user>` `<pass>` `<hash>` are placeholders you type over.
+- `{PORTS}` — open TCP ports from this box's nmap scans (or what you typed in the Ports bar)
+- `<user>` `<pass>` `<hash>` — from the cred you picked in the Creds tab, or type over them
 
 ---
 
@@ -97,6 +104,7 @@ This is a **local, single-user tool** for your own machine. It is not hardened f
 - The UI runs sandboxed: `contextIsolation` on, `nodeIntegration` off, `sandbox` on, with a strict Content-Security-Policy. It can only reach the main process through a fixed list of IPC channels exposed by `preload.js`.
 - Scan output shown in the UI is HTML-escaped before display, so malicious content in a target's response cannot run in the app window.
 - The output viewer only reads files inside the current box's output folder, and box names are restricted to a safe character set.
+- Creds are stored in plain text in `workspaces/<box>/box.json` (git-ignored). Passwords are masked in the UI and shell-quoted when inserted, but they do end up in your shell history like any typed command.
 - Only run it on engagements you are authorised to perform.
 
 ---

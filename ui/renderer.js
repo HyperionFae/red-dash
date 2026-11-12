@@ -98,9 +98,20 @@ let shellName = 'shell'
 let missingTools = new Set()
 const DEFAULTS = {
   WORDLIST: '/usr/share/seclists/Discovery/Web-Content/common.txt',
-  SUBLIST: '/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt',
-  PORTS: ''
+  SUBLIST: '/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt'
 }
+// per-box data (ports + creds), saved to workspaces/<box>/box.json
+const EMPTY_BOX = () => ({ ports: '', portsManual: false, creds: [], activeCred: -1 })
+let box = EMPTY_BOX()
+function activeCred() { return box.creds[box.activeCred] || null }
+
+// single-quote a value for the shell only when it needs it, so plain
+// usernames stay readable in the terminal
+function shq(s) {
+  return /^[A-Za-z0-9_@%+=:,.\/-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`
+}
+// `<hash>` is the NT hash; accept a pasted LM:NT pair and keep the NT half
+function ntHash(h) { return h.includes(':') ? h.split(':').pop() : h }
 
 function esc(s) {
   return String(s).replace(/[&<>"]/g, c => (
@@ -163,7 +174,9 @@ async function loadTarget() {
 }
 function updateTargetDisplay() {
   const t = target.target || target.domain
-  $('term-target').textContent = t ? '▸ ' + [target.target, target.domain].filter(Boolean).join(' · ') : ''
+  const c = activeCred()
+  const who = c && c.user ? ` · as ${c.user}` : ''
+  $('term-target').textContent = t ? '▸ ' + [target.target, target.domain].filter(Boolean).join(' · ') + who : who.slice(3)
   document.title = t ? `Red Dash ▸ ${t}` : 'Red Dash'
 }
 function updateTermTitle() {
@@ -206,8 +219,9 @@ async function switchWorkspace(name) {
   target.workspace = res.workspace
   updateDeleteBtn(); updateTermTitle()
   clearOutputView()
+  await loadBox()
   refreshOutput(); renderExamples()
-  if (activeTab !== 'output') loadNote(activeTab)
+  if (activeTab === 'notes' || activeTab === 'loot') loadNote(activeTab)
 }
 selWs.onchange = () => { if (selWs.value) switchWorkspace(selWs.value) }
 
@@ -254,8 +268,9 @@ $('delete-confirm').onclick = async () => {
   updateDeleteBtn(); updateTermTitle()
   await loadWorkspaces()
   clearOutputView()
+  await loadBox()
   refreshOutput(); renderExamples()
-  if (activeTab !== 'output') loadNote(activeTab)
+  if (activeTab === 'notes' || activeTab === 'loot') loadNote(activeTab)
   toast(`Deleted ${name}`)
 }
 
@@ -396,18 +411,36 @@ async function loadExamples() {
   allExamples = await api.invoke('get-examples')
   renderExamples()
 }
-function fillVars(cmd) {
-  return cmd
+// `forDisplay` swaps cred values for markers that prettyCmd turns into
+// highlighted (and, for secrets, masked) chips — so a password never shows
+// on screen in the playbook, only in the command that's sent to the shell
+const MARK = { user: '\u0001U\u0001', pass: '\u0001P\u0001', hash: '\u0001H\u0001', ports: '\u0001O\u0001' }
+function fillVars(cmd, forDisplay = false) {
+  let s = cmd
     .replaceAll('{TARGET}', target.target || '{TARGET}')
     .replaceAll('{DOMAIN}', target.domain || '{DOMAIN}')
     .replaceAll('{OUT}', currentOutDir || 'output')
     .replaceAll('{WORDLIST}', DEFAULTS.WORDLIST)
     .replaceAll('{SUBLIST}', DEFAULTS.SUBLIST)
-    .replaceAll('{PORTS}', DEFAULTS.PORTS || '{PORTS}')
+    .replaceAll('{PORTS}', box.ports ? (forDisplay ? MARK.ports : box.ports) : '{PORTS}')
+  const c = activeCred()
+  if (c) {
+    const vals = { user: c.user, pass: c.pass, hash: c.hash && ntHash(c.hash) }
+    for (const k of ['user', 'pass', 'hash']) {
+      if (vals[k]) s = s.replaceAll(`<${k}>`, forDisplay ? MARK[k] : shq(vals[k]))
+    }
+  }
+  return s
 }
 // escape, then shorten long absolute paths and highlight what still needs typing
 function prettyCmd(cmd) {
-  let s = esc(cmd)
+  let s = esc(cmd).replaceAll(MARK.ports, `<span class="filled" title="${box.portsManual ? 'typed by you' : 'from nmap'}">${esc(box.ports)}</span>`)
+  const c = activeCred()
+  if (c) {
+    s = s.replaceAll(MARK.user, `<span class="filled cred-fill">${esc(c.user)}</span>`)
+      .replaceAll(MARK.pass, '<span class="filled cred-fill" title="password hidden">••••••</span>')
+      .replaceAll(MARK.hash, `<span class="filled cred-fill" title="NT hash">${esc(ntHash(c.hash).slice(0, 6))}…</span>`)
+  }
   if (currentOutDir) s = s.replaceAll(esc(currentOutDir), '<span class="filled">$OUT</span>')
   for (const k of ['WORDLIST', 'SUBLIST']) {
     const v = esc(DEFAULTS[k])
@@ -449,16 +482,16 @@ function renderExamples() {
     const items = document.createElement('div')
     items.className = 'tool-items'
     for (const ex of groups[tool]) {
-      const cmd = fillVars(ex.command)
       const el = document.createElement('div')
       el.className = 'ex'
       el.title = 'Click to drop into the terminal'
       el.innerHTML = `
         <div class="ex-name">${ex.mine ? '<span class="star">★</span> ' : ''}${esc(ex.name)}</div>
-        <div class="ex-cmd">${prettyCmd(cmd)}</div>
+        <div class="ex-cmd">${prettyCmd(fillVars(ex.command, true))}</div>
         ${ex.note ? `<div class="ex-note">${esc(ex.note)}</div>` : ''}`
       el.onclick = () => {
-        api.send('term-insert', cmd)
+        // fill at click time so it always uses the current ports / cred
+        api.send('term-insert', fillVars(ex.command))
         term.focus()
         el.classList.add('sent')
         setTimeout(() => el.classList.remove('sent'), 900)
@@ -601,7 +634,7 @@ function clearOutputView() {
 let outputRefreshTimer
 api.on('output-changed', () => {
   clearTimeout(outputRefreshTimer)
-  outputRefreshTimer = setTimeout(refreshOutput, 250)
+  outputRefreshTimer = setTimeout(() => { refreshOutput(); autoPorts() }, 250)
 })
 $('btn-refresh-output').onclick = refreshOutput
 // keep the "2m ago" labels honest
@@ -705,7 +738,7 @@ function renderWhatweb(txt) {
 
 // ---------- NOTES / LOOT TABS ----------
 let activeTab = 'output'
-const tabButtons = { output: $('tab-output'), notes: $('tab-notes'), loot: $('tab-loot') }
+const tabButtons = { output: $('tab-output'), notes: $('tab-notes'), loot: $('tab-loot'), creds: $('tab-creds') }
 const notesView = $('notes-view')
 const lootView = $('loot-view')
 const savedMsg = $('note-saved-msg')
@@ -725,7 +758,7 @@ async function loadNote(type) {
 // box the main process writes to, so text never lands in the wrong box
 async function flushNote() {
   clearTimeout(noteTimer)
-  if (!noteDirty || activeTab === 'output') { noteDirty = false; return }
+  if (!noteDirty || (activeTab !== 'notes' && activeTab !== 'loot')) { noteDirty = false; return }
   noteDirty = false
   const text = (activeTab === 'notes' ? notesView : lootView).value
   await api.invoke('write-note', activeTab, text)
@@ -749,13 +782,156 @@ async function switchTab(tab) {
   $('output-pane').classList.toggle('hidden', tab !== 'output')
   notesView.classList.toggle('hidden', tab !== 'notes')
   lootView.classList.toggle('hidden', tab !== 'loot')
+  $('creds-pane').classList.toggle('hidden', tab !== 'creds')
   $('btn-refresh-output').classList.toggle('hidden', tab !== 'output')
-  if (tab !== 'output') { await loadNote(tab); (tab === 'notes' ? notesView : lootView).focus() }
+  if (tab === 'notes' || tab === 'loot') { await loadNote(tab); (tab === 'notes' ? notesView : lootView).focus() }
+  if (tab === 'creds') { renderCreds(); if (target.workspace) $('cred-user').focus() }
 }
-tabButtons.output.onclick = () => switchTab('output')
-tabButtons.notes.onclick = () => switchTab('notes')
-tabButtons.loot.onclick = () => switchTab('loot')
+for (const tab of Object.keys(tabButtons)) tabButtons[tab].onclick = () => switchTab(tab)
 window.addEventListener('beforeunload', () => { if (noteDirty) flushNote() })
+
+// ---------- BOX DATA (ports + creds) ----------
+async function loadBox() {
+  box = target.workspace ? await api.invoke('read-box') : EMPTY_BOX()
+  renderPorts(); renderCreds(); updateTargetDisplay()
+  await autoPorts(true)
+}
+function saveBox() {
+  if (target.workspace) api.invoke('write-box', box)
+}
+
+// ---------- PORTS (auto from nmap, or typed by hand) ----------
+const inPorts = $('in-ports')
+function renderPorts() {
+  const on = !!target.workspace
+  inPorts.disabled = !on
+  $('btn-ports-auto').disabled = !on
+  inPorts.value = box.ports
+  inPorts.placeholder = on ? 'auto from nmap' : 'pick a box'
+  inPorts.classList.toggle('manual', box.portsManual)
+  $('btn-ports-auto').classList.toggle('on', on && !box.portsManual)
+  inPorts.title = box.portsManual
+    ? 'Typed by you — click AUTO to fill from nmap again'
+    : 'Filled automatically from this box\'s nmap scans (type to override)'
+}
+// quiet = don't toast (used when just switching boxes)
+async function autoPorts(quiet = false) {
+  if (!target.workspace || box.portsManual) return
+  const found = await api.invoke('get-ports')
+  if (found === box.ports) return
+  box.ports = found
+  saveBox(); renderPorts(); renderExamples()
+  if (!quiet && found) toast(`Ports from nmap: ${found}`)
+}
+function commitPorts() {
+  if (!target.workspace) return
+  // keep only real ports / ranges ("22", "1-1000") — this ends up in the shell
+  const typed = (inPorts.value.match(/\d+(?:-\d+)?/g) || []).join(',')
+  if (typed === box.ports && box.portsManual) return renderPorts()
+  if (!typed) {
+    // cleared the box → go back to automatic
+    box.portsManual = false
+    box.ports = ''
+    saveBox(); renderPorts(); renderExamples(); autoPorts()
+    return
+  }
+  if (typed === box.ports) return renderPorts()   // unchanged, stay automatic
+  box.ports = typed
+  box.portsManual = true
+  saveBox(); renderPorts(); renderExamples()
+  toast('Ports set by hand')
+}
+inPorts.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { commitPorts(); term.focus() }
+  else if (e.key === 'Escape') { renderPorts(); term.focus() }
+})
+inPorts.addEventListener('blur', commitPorts)
+$('btn-ports-auto').onclick = async () => {
+  box.portsManual = false
+  box.ports = ''
+  renderPorts()
+  await autoPorts(true)
+  saveBox(); renderPorts(); renderExamples()
+  toast(box.ports ? `Ports from nmap: ${box.ports}` : 'No open ports in nmap output yet')
+}
+
+// ---------- CREDS ----------
+const credInputs = ['cred-user', 'cred-pass', 'cred-hash', 'cred-note'].map($)
+function renderCreds() {
+  const list = $('cred-list')
+  const on = !!target.workspace
+  credInputs.forEach(i => { i.disabled = !on })
+  $('cred-add').disabled = !on
+  const count = $('cred-count')
+  count.textContent = box.creds.length
+  count.classList.toggle('hidden', !box.creds.length)
+  list.innerHTML = ''
+  if (!on) { list.innerHTML = '<div class="empty">Pick or create a box first.</div>'; return }
+  if (!box.creds.length) {
+    list.innerHTML = '<div class="empty">No creds yet.<br>Add a user + password or hash above.</div>'
+    return
+  }
+  box.creds.forEach((c, i) => {
+    const el = document.createElement('div')
+    el.className = 'cred' + (i === box.activeCred ? ' active' : '')
+    el.title = i === box.activeCred ? 'In use — click to stop using it' : 'Click to use in the playbook'
+    el.innerHTML = `
+      <div class="cred-top">
+        <span class="cred-dot"></span>
+        <span class="cred-user">${esc(c.user || '(no user)')}</span>
+        ${i === box.activeCred ? '<span class="cred-tag">IN USE</span>' : ''}
+      </div>
+      ${c.pass ? '<div class="cred-line"><span class="k">pass</span><span class="v">••••••</span></div>' : ''}
+      ${c.hash ? `<div class="cred-line"><span class="k">hash</span><span class="v">${esc(c.hash.length > 18 ? c.hash.slice(0, 18) + '…' : c.hash)}</span></div>` : ''}
+      ${c.note ? `<div class="cred-note">${esc(c.note)}</div>` : ''}`
+    const actions = document.createElement('div')
+    actions.className = 'cred-actions'
+    const addBtn = (label, title, fn) => {
+      const b = document.createElement('button')
+      b.className = 'mini ghost'
+      b.textContent = label
+      b.title = title
+      b.onclick = (e) => { e.stopPropagation(); fn() }
+      actions.appendChild(b)
+    }
+    const copy = async (what, val) => {
+      const ok = await api.invoke('copy-text', val)
+      toast(ok ? `Copied ${what}` : 'Copy failed')
+    }
+    if (c.pass) addBtn('copy pass', 'Copy password', () => copy('password', c.pass))
+    if (c.hash) addBtn('copy hash', 'Copy hash', () => copy('hash', c.hash))
+    addBtn('×', 'Delete this cred', () => {
+      if (!confirm(`Delete cred "${c.user || '(no user)'}"?`)) return
+      box.creds.splice(i, 1)
+      if (box.activeCred === i) box.activeCred = -1
+      else if (box.activeCred > i) box.activeCred--
+      credsChanged()
+    })
+    el.appendChild(actions)
+    el.onclick = () => {
+      box.activeCred = box.activeCred === i ? -1 : i
+      credsChanged()
+      toast(box.activeCred === i ? `Using ${c.user || 'cred'} in the playbook` : 'Cred not in use')
+    }
+    list.appendChild(el)
+  })
+}
+function credsChanged() {
+  saveBox(); renderCreds(); renderExamples(); updateTargetDisplay()
+}
+function addCred() {
+  const [user, pass, hash, note] = credInputs.map(i => i.value.trim())
+  if (!user && !pass && !hash) { $('cred-user').focus(); return }
+  box.creds.push({ user, pass, hash, note })
+  // the first cred of a box goes straight into use — that's nearly always wanted
+  if (box.activeCred < 0) box.activeCred = box.creds.length - 1
+  credInputs.forEach(i => { i.value = '' })
+  credsChanged()
+  $('cred-user').focus()
+  toast('Cred saved')
+}
+$('cred-add').onclick = addCred
+credInputs.forEach(i => i.addEventListener('keydown', (e) => { if (e.key === 'Enter') addCred() }))
 
 // ---------- KEYBOARD ----------
 document.addEventListener('keydown', (e) => {
@@ -780,6 +956,7 @@ document.addEventListener('keydown', (e) => {
     const res = await api.invoke('set-workspace', target.workspace)
     currentOutDir = res.outputDir
   }
+  await loadBox()
   updateDeleteBtn(); updateTermTitle(); clearOutputView()
   await checkEnv()
   startEnvPolling()

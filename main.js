@@ -164,7 +164,10 @@ ipcMain.handle('set-workspace', (ev, name) => {
   saveState(state)
   const dir = workspaceDir()
   if (dir) ensureDirs(dir)
-  if (shellProc && dir) shellProc.write(`cd "${dir}"\n`)
+  // Ctrl+U first: wipe anything sitting un-run at the prompt (e.g. a playbook
+  // command that was clicked but not entered) — otherwise the cd gets glued
+  // onto the end of it and the Enter runs that half-typed command
+  if (shellProc && dir) shellProc.write(`\x15cd "${dir}"\n`)
   startWatching()
   return { workspace: name, outputDir: outputDir() }
 })
@@ -196,6 +199,63 @@ ipcMain.handle('write-note', (ev, type, text) => {
   if (!f) return false
   try { fs.writeFileSync(f, text); return true } catch { return false }
 })
+
+// ---- per-box data: ports + creds (workspaces/<box>/box.json) ----
+// Values from here get typed into the shell, so they're cleaned on the way in:
+// ports may only hold digits/commas/dashes, creds are plain strings (the UI
+// shell-quotes them when it fills a command).
+const MAX_CREDS = 500
+function boxFile() { const d = workspaceDir(); return d ? path.join(d, 'box.json') : '' }
+// keep only real ports / ranges ("22", "1-1000"); anything else is dropped
+function cleanPorts(s) {
+  return (String(s || '').match(/\d+(?:-\d+)?/g) || []).join(',')
+}
+function cleanBox(b) {
+  b = b && typeof b === 'object' ? b : {}
+  const creds = (Array.isArray(b.creds) ? b.creds : []).slice(0, MAX_CREDS).map(c => ({
+    user: String(c?.user || ''), pass: String(c?.pass || ''),
+    hash: String(c?.hash || ''), note: String(c?.note || '')
+  }))
+  const active = Number.isInteger(b.activeCred) && b.activeCred < creds.length ? b.activeCred : -1
+  return { ports: cleanPorts(b.ports), portsManual: !!b.portsManual, creds, activeCred: active }
+}
+ipcMain.handle('read-box', () => {
+  const f = boxFile()
+  return cleanBox(f ? readJson(f, {}) : {})
+})
+ipcMain.handle('write-box', (ev, data) => {
+  const f = boxFile()
+  if (!f) return false
+  try { fs.writeFileSync(f, JSON.stringify(cleanBox(data), null, 2)); return true } catch { return false }
+})
+
+// Open TCP ports from every nmap XML file in this box. If a target IP is set,
+// only hosts with that address count (a sweep of a whole subnet shouldn't
+// pollute one box's port list) — unless no host matches, e.g. the scan was run
+// against a hostname, in which case every host counts.
+function parseNmapPorts(xml, targetIp) {
+  const hosts = xml.split(/<host[\s>]/).slice(1)
+  const portsOf = (h) => [...h.matchAll(/<port\s+protocol="tcp"\s+portid="(\d+)"\s*>\s*<state\s+state="open"/g)].map(m => +m[1])
+  const matching = targetIp ? hosts.filter(h => h.includes(`addr="${targetIp}"`)) : []
+  return (matching.length ? matching : hosts).flatMap(portsOf)
+}
+function nmapPorts() {
+  const dir = path.join(outputDir() || '', 'nmap')
+  if (!outputDir() || !fs.existsSync(dir)) return ''
+  const ports = new Set()
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const full = path.join(d, e.name)
+      if (e.isDirectory()) walk(full)
+      else if (e.name.endsWith('.xml')) {
+        try { parseNmapPorts(fs.readFileSync(full, 'utf8'), state.target).forEach(p => ports.add(p)) } catch {}
+      }
+    }
+  }
+  try { walk(dir) } catch {}
+  return [...ports].sort((a, b) => a - b).join(',')
+}
+ipcMain.handle('get-ports', () => nmapPorts())
 
 // ---- output files ----
 function listOutputFiles() {
