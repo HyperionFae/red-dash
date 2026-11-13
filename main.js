@@ -58,16 +58,14 @@ function createWindow() {
 app.whenReady().then(createWindow)
 app.on('window-all-closed', () => app.quit())
 
-// ---- terminal ----
-let shellProc = null
+// ---- terminals (one PTY per tab) ----
 let outputWatcher = null
+const shells = new Map()   // id -> pty process
+let activeShellId = null    // the tab the box-switch `cd` is typed into
 
-ipcMain.on('term-ready', (e, size) => {
-  // a page reload fires this again — kill the old shell so it doesn't
-  // keep running in the background, orphaned
-  if (shellProc) { try { shellProc.kill() } catch {} }
+function spawnShell(id, size) {
   const shell = process.env.SHELL || 'bash'
-  shellProc = pty.spawn(shell, [], {
+  const p = pty.spawn(shell, [], {
     name: 'xterm-color',
     cwd: workspaceDir() || process.env.HOME || os.homedir(),
     env: process.env,
@@ -77,13 +75,18 @@ ipcMain.on('term-ready', (e, size) => {
     // of the old one (SIGWINCH), leaving a ghosted double prompt.
     cols: size?.cols || 100, rows: size?.rows || 30
   })
-  shellProc.onData(d => { if (win) win.webContents.send('term-out', d) })
-})
-ipcMain.on('term-in', (ev, d) => { if (shellProc) shellProc.write(d) })
-ipcMain.on('term-insert', (ev, text) => { if (shellProc) shellProc.write(text) })
-ipcMain.on('term-resize', (ev, size) => {
-  try { if (shellProc) shellProc.resize(size.cols, size.rows) } catch {}
-})
+  p.onData(d => { if (win) win.webContents.send('term-out', { id, data: d }) })
+  p.onExit(() => { shells.delete(id); if (win) win.webContents.send('term-exit', { id }) })
+  shells.set(id, p)
+}
+// a page reload re-creates terminals from scratch — kill any orphaned shells first
+ipcMain.on('term-reset', () => { for (const p of shells.values()) { try { p.kill() } catch {} } shells.clear() })
+ipcMain.on('term-open', (ev, { id, size }) => { if (!shells.has(id)) spawnShell(id, size) })
+ipcMain.on('term-in', (ev, { id, data }) => { const p = shells.get(id); if (p) p.write(data) })
+ipcMain.on('term-insert', (ev, { id, text }) => { const p = shells.get(id); if (p) p.write(text) })
+ipcMain.on('term-resize', (ev, { id, size }) => { const p = shells.get(id); try { if (p) p.resize(size.cols, size.rows) } catch {} })
+ipcMain.on('term-close', (ev, { id }) => { const p = shells.get(id); if (p) { try { p.kill() } catch {} } })
+ipcMain.on('term-active', (ev, { id }) => { activeShellId = id })
 
 // ---- examples ----
 function readJson(file, fallback) {
@@ -172,8 +175,10 @@ ipcMain.handle('set-workspace', (ev, name) => {
   if (dir) ensureDirs(dir)
   // Ctrl+U first: wipe anything sitting un-run at the prompt (e.g. a playbook
   // command that was clicked but not entered) — otherwise the cd gets glued
-  // onto the end of it and the Enter runs that half-typed command
-  if (shellProc && dir) shellProc.write(`\x15cd "${dir}"\n`)
+  // onto the end of it and the Enter runs that half-typed command. Only the
+  // active tab follows the box; other tabs (e.g. a listener) stay put.
+  const activeShell = shells.get(activeShellId)
+  if (activeShell && dir) activeShell.write(`\x15cd "${dir}"\n`)
   startWatching()
   return { workspace: name, outputDir: outputDir() }
 })
@@ -283,6 +288,42 @@ function nmapPorts() {
 }
 ipcMain.handle('get-ports', () => nmapPorts())
 
+// ---- command log (workspaces/<box>/commands.json) ----
+// Records commands the user runs FROM Red Dash (playbook clicks, toolbox
+// sends). It's intentionally not a shell-history scraper — it logs what the
+// app sent, which is reliable and is what the report is built from.
+const MAX_LOG = 2000
+function logFile() { const d = workspaceDir(); return d ? path.join(d, 'commands.json') : '' }
+ipcMain.handle('append-log', (ev, cmd) => {
+  const f = logFile()
+  cmd = String(cmd || '').trim()
+  if (!f || !cmd) return false
+  const log = readJson(f, [])
+  const arr = Array.isArray(log) ? log : []
+  // skip a verbatim repeat of the last command (double-clicks etc.)
+  if (arr.length && arr[arr.length - 1].cmd === cmd) return true
+  arr.push({ t: Date.now(), cmd })
+  try { fs.writeFileSync(f, JSON.stringify(arr.slice(-MAX_LOG), null, 2)); return true } catch { return false }
+})
+ipcMain.handle('read-log', () => {
+  const f = logFile()
+  const log = f ? readJson(f, []) : []
+  return Array.isArray(log) ? log : []
+})
+ipcMain.handle('delete-log-entry', (ev, i) => {
+  const f = logFile()
+  if (!f) return false
+  const arr = readJson(f, [])
+  if (!Array.isArray(arr) || !Number.isInteger(i) || i < 0 || i >= arr.length) return false
+  arr.splice(i, 1)
+  try { fs.writeFileSync(f, JSON.stringify(arr, null, 2)); return true } catch { return false }
+})
+ipcMain.handle('clear-log', () => {
+  const f = logFile()
+  if (!f) return false
+  try { fs.writeFileSync(f, '[]'); return true } catch { return false }
+})
+
 // ---- output files ----
 function listOutputFiles() {
   const base = outputDir()
@@ -321,6 +362,153 @@ function startWatching() {
     })
   } catch {}
 }
+
+// ---- report export ----
+// Pulls together everything on a box (target, ports/services, creds, checklist,
+// command log, notes, loot, output files) into a Markdown / HTML / PDF write-up.
+function parseNmapServices(xml, targetIp) {
+  const hosts = xml.split(/<host[\s>]/).slice(1)
+  const pick = targetIp ? hosts.filter(h => h.includes(`addr="${targetIp}"`)) : []
+  const use = pick.length ? pick : hosts
+  const out = []
+  for (const h of use) {
+    for (const m of h.matchAll(/<port\s+protocol="(\w+)"\s+portid="(\d+)"\s*>([\s\S]*?)<\/port>/g)) {
+      const body = m[3]
+      if (!/<state\s+state="open"/.test(body)) continue
+      const svc = body.match(/<service\s+([^>]*?)\/?>/)
+      const attr = (a) => { const r = svc && svc[1].match(new RegExp(a + '="([^"]*)"')); return r ? r[1] : '' }
+      const ver = [attr('product'), attr('version'), attr('extrainfo')].filter(Boolean).join(' ')
+      out.push({ port: `${m[2]}/${m[1]}`, service: attr('name'), version: ver })
+    }
+  }
+  // de-dup by port, keep the richest row
+  const byPort = {}
+  for (const r of out) if (!byPort[r.port] || r.version.length > byPort[r.port].version.length) byPort[r.port] = r
+  return Object.values(byPort).sort((a, b) => parseInt(a.port) - parseInt(b.port))
+}
+function collectReport() {
+  const dir = workspaceDir()
+  const b = cleanBox(dir ? readJson(boxFile(), {}) : {})
+  // open services from every nmap XML in the box
+  const services = []
+  const seen = new Set()
+  const ndir = path.join(outputDir() || '', 'nmap')
+  if (outputDir() && fs.existsSync(ndir)) {
+    const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const full = path.join(d, e.name)
+      if (e.isDirectory()) walk(full)
+      else if (e.name.endsWith('.xml')) { try { for (const s of parseNmapServices(fs.readFileSync(full, 'utf8'), state.target)) if (!seen.has(s.port)) { seen.add(s.port); services.push(s) } } catch {} }
+    } }
+    try { walk(ndir) } catch {}
+  }
+  const log = Array.isArray(readJson(logFile(), [])) ? readJson(logFile(), []) : []
+  const readFileSafe = (f) => { try { return fs.readFileSync(f, 'utf8') } catch { return '' } }
+  return {
+    box: state.workspace || '(no box)',
+    target: state.target || '', domain: state.domain || '',
+    date: new Date().toISOString().slice(0, 10),
+    ports: b.ports, services,
+    creds: b.creds, checklist: b.checklist,
+    commands: log,
+    notes: dir ? readFileSafe(path.join(dir, 'notes.md')) : '',
+    loot: dir ? readFileSafe(path.join(dir, 'loot.md')) : '',
+    files: listOutputFiles().map(f => f.name)
+  }
+}
+function fmtTime(ms) { return new Date(ms).toISOString().slice(0, 16).replace('T', ' ') }
+function reportMarkdown(d) {
+  const L = []
+  L.push(`# ${d.box} — engagement notes`, '')
+  L.push(`- **Target:** ${d.target || '—'}${d.domain ? ` (${d.domain})` : ''}`)
+  L.push(`- **Date:** ${d.date}`)
+  if (d.ports) L.push(`- **Open ports:** ${d.ports}`)
+  const done = d.checklist.filter(c => c.done).length
+  if (d.checklist.length) L.push(`- **Progress:** ${done}/${d.checklist.length} steps done`)
+  L.push('')
+  if (d.services.length) {
+    L.push('## Services', '', '| Port | Service | Version |', '| --- | --- | --- |')
+    for (const s of d.services) L.push(`| ${s.port} | ${s.service || ''} | ${s.version || ''} |`)
+    L.push('')
+  }
+  if (d.checklist.length) {
+    L.push('## Checklist', '')
+    for (const c of d.checklist) L.push(`- [${c.done ? 'x' : ' '}] ${c.text}`)
+    L.push('')
+  }
+  if (d.creds.length) {
+    L.push('## Credentials', '', '| User | Password | Hash | Note |', '| --- | --- | --- | --- |')
+    for (const c of d.creds) L.push(`| ${c.user || ''} | ${c.pass || ''} | ${c.hash || ''} | ${c.note || ''} |`)
+    L.push('')
+  }
+  if (d.commands.length) {
+    L.push('## Commands run', '', '```')
+    for (const e of d.commands) L.push(`${fmtTime(e.t)}  ${e.cmd}`)
+    L.push('```', '')
+  }
+  if (d.notes.trim()) L.push('## Notes', '', d.notes.trim(), '')
+  if (d.loot.trim()) L.push('## Loot', '', d.loot.trim(), '')
+  if (d.files.length) { L.push('## Output files', ''); for (const f of d.files) L.push(`- \`${f}\``); L.push('') }
+  L.push('---', '', '_Generated by Red Dash._')
+  return L.join('\n')
+}
+function esc(s) { return String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])) }
+function reportHtml(d) {
+  const row = (cells) => '<tr>' + cells.map(c => `<td>${esc(c)}</td>`).join('') + '</tr>'
+  let h = `<!doctype html><html><head><meta charset="utf-8"><style>
+    body{font:13px/1.55 -apple-system,Segoe UI,Roboto,sans-serif;color:#1a1a22;max-width:820px;margin:32px auto;padding:0 24px}
+    h1{font-size:24px;border-bottom:3px solid #ff3b5c;padding-bottom:8px}
+    h2{font-size:16px;margin-top:28px;color:#c01f3c;border-bottom:1px solid #eee;padding-bottom:4px}
+    table{border-collapse:collapse;width:100%;margin:8px 0;font-size:12px}
+    th,td{border:1px solid #ddd;padding:6px 9px;text-align:left;vertical-align:top}
+    th{background:#faf0f2}
+    pre{background:#f6f6f8;border:1px solid #e3e3e8;border-radius:5px;padding:12px;font-size:11.5px;white-space:pre-wrap;word-break:break-word}
+    .meta{color:#555} .done{color:#1a8a53} .todo{color:#999}
+    code{background:#f2f2f5;padding:1px 4px;border-radius:3px}
+    footer{margin-top:32px;color:#999;font-size:11px;border-top:1px solid #eee;padding-top:10px}
+  </style></head><body>`
+  h += `<h1>${esc(d.box)} — engagement notes</h1>`
+  h += `<p class="meta"><b>Target:</b> ${esc(d.target || '—')}${d.domain ? ' (' + esc(d.domain) + ')' : ''}<br>`
+  h += `<b>Date:</b> ${esc(d.date)}${d.ports ? '<br><b>Open ports:</b> ' + esc(d.ports) : ''}</p>`
+  if (d.services.length) h += '<h2>Services</h2><table><tr><th>Port</th><th>Service</th><th>Version</th></tr>' + d.services.map(s => row([s.port, s.service, s.version])).join('') + '</table>'
+  if (d.checklist.length) h += '<h2>Checklist</h2><ul>' + d.checklist.map(c => `<li class="${c.done ? 'done' : 'todo'}">${c.done ? '✓' : '☐'} ${esc(c.text)}</li>`).join('') + '</ul>'
+  if (d.creds.length) h += '<h2>Credentials</h2><table><tr><th>User</th><th>Password</th><th>Hash</th><th>Note</th></tr>' + d.creds.map(c => row([c.user, c.pass, c.hash, c.note])).join('') + '</table>'
+  if (d.commands.length) h += '<h2>Commands run</h2><pre>' + d.commands.map(e => esc(fmtTime(e.t) + '  ' + e.cmd)).join('\n') + '</pre>'
+  if (d.notes.trim()) h += '<h2>Notes</h2><pre>' + esc(d.notes.trim()) + '</pre>'
+  if (d.loot.trim()) h += '<h2>Loot</h2><pre>' + esc(d.loot.trim()) + '</pre>'
+  if (d.files.length) h += '<h2>Output files</h2><ul>' + d.files.map(f => `<li><code>${esc(f)}</code></li>`).join('') + '</ul>'
+  h += '<footer>Generated by Red Dash</footer></body></html>'
+  return h
+}
+ipcMain.handle('build-report', () => (state.workspace ? reportMarkdown(collectReport()) : ''))
+ipcMain.handle('export-report', async (ev, format) => {
+  const dir = workspaceDir()
+  if (!dir) return { ok: false, error: 'No box selected' }
+  const data = collectReport()
+  const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 16)
+  const base = `report-${data.box}-${stamp}`
+  try {
+    if (format === 'md') {
+      const p = path.join(dir, base + '.md')
+      fs.writeFileSync(p, reportMarkdown(data)); return { ok: true, path: p }
+    }
+    if (format === 'html') {
+      const p = path.join(dir, base + '.html')
+      fs.writeFileSync(p, reportHtml(data)); return { ok: true, path: p }
+    }
+    if (format === 'pdf') {
+      const tmp = path.join(dir, '.' + base + '.tmp.html')
+      fs.writeFileSync(tmp, reportHtml(data))
+      const w = new BrowserWindow({ show: false, webPreferences: { offscreen: true, sandbox: true } })
+      await w.loadFile(tmp)
+      const pdf = await w.webContents.printToPDF({ printBackground: true })
+      try { w.destroy() } catch {}
+      try { fs.unlinkSync(tmp) } catch {}
+      const p = path.join(dir, base + '.pdf')
+      fs.writeFileSync(p, pdf); return { ok: true, path: p }
+    }
+    return { ok: false, error: 'Unknown format' }
+  } catch (e) { return { ok: false, error: e.message } }
+})
 
 // ---- environment check (tools + seclists) ----
 function have(bin) {

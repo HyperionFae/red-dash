@@ -26,7 +26,7 @@ Stop digging through folders, re-running scans just to look at the results again
 ## Features
 
 **Run**
-- 🖥️ **Real terminal** in the centre: your own shell, your own tools
+- 🖥️ **Real terminal** in the centre (with tabs — scan in one, listener in another): your own shell, your own tools
 - 📖 **Playbook** of 70+ ready commands (recon, web, SMB/AD, privesc, pivoting): click one, it lands in the terminal with your target filled in, you press Enter
 - 🎯 **Target bar**: set the IP / domain once, every command updates
 - 🧰 **Toolbox**: reverse-shell generator (LHOST from your VPN, copy or send to terminal) and a hash identifier (type + `hashcat -m` mode + one-click crack)
@@ -38,9 +38,11 @@ Stop digging through folders, re-running scans just to look at the results again
 - 🔑 **Creds tab**: save users, passwords and NT hashes; click one and every login command fills itself in (pass-the-hash too). Passwords stay masked on screen
 
 **Keep track**
-- 📦 **One box per target**: output, notes, loot, creds and checklist kept separate
+- 📦 **One box per target**: output, notes, loot, creds, checklist and command log kept separate
 - ✔️ **Checklist**: each box starts with an HTB/THM flow (recon → foothold → privesc → flags); tick it off or make your own
+- 🧾 **Command log**: every command you run from the app, timestamped and re-runnable
 - 📝 **Notes + Loot** tabs, autosaved
+- ⎙ **Report export**: one click turns a box into a Markdown / HTML / PDF write-up (great for HTB/THM reports and portfolios)
 - ✅ **Setup check**: finds missing tools and SecLists and gives you the install command for your distro (pacman, apt, dnf, zypper, apk)
 - 🛰️ **VPN status**: shows your HTB/THM VPN IP, click to copy
 
