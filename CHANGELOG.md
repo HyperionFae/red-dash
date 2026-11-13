@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.1
+
+### Fixed
+- **Terminal in the AppImage** — the built-in terminal no longer inherits the AppImage launcher's environment.
+  - `ARGV0` made zsh start every command under the AppImage's name: mise failed with "not a valid shim", and oh-my-zsh updates and git broke in restricted mode.
+  - `LD_LIBRARY_PATH` and `PATH` pointed into the AppImage, so tools could load its bundled libraries instead of the system's.
+  - Cleaned once at startup, so every program Red Dash starts (terminals, tool checks, clipboard) gets a clean environment.
+
 ## 0.4.0
 
 ### Added
