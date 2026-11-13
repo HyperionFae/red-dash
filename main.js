@@ -5,6 +5,29 @@ const path = require('path')
 const os = require('os')
 const { execSync, spawn } = require('child_process')
 
+// ---- clean environment ----
+// The AppImage launcher adds its own variables to the environment. Every
+// program Red Dash starts (terminal shells, tool checks, clipboard helpers)
+// inherits process.env, so strip them once here, before anything spawns.
+// ARGV0 is the harmful one: zsh uses it as argv[0] for every command it runs,
+// so tools think they are called "red-dash-x.y.z.AppImage" — mise rejects it
+// as an unknown shim, and sub-zsh's start in restricted mode (name starts
+// with "r"), which breaks oh-my-zsh updates and git.
+// The launcher also prepends its bundled libraries to LD_LIBRARY_PATH (and
+// similar path lists); left in, the user's tools would load those libraries
+// instead of the system's. Drop only the entries inside the AppImage mount.
+;(function cleanEnv () {
+  const appdir = process.env.APPDIR
+  for (const v of ['ARGV0', 'APPIMAGE', 'APPDIR', 'OWD']) delete process.env[v]
+  if (!appdir) return
+  for (const v of ['LD_LIBRARY_PATH', 'PATH', 'XDG_DATA_DIRS', 'PYTHONPATH', 'PERLLIB', 'GSETTINGS_SCHEMA_DIR', 'QT_PLUGIN_PATH']) {
+    if (!process.env[v]) continue
+    const kept = process.env[v].split(':').filter(p => p && !p.startsWith(appdir))
+    if (kept.length) process.env[v] = kept.join(':')
+    else delete process.env[v]
+  }
+})()
+
 // ---- paths ----
 // ROOT holds the app's own files (read-only once packaged — an AppImage is a
 // read-only mount). DATA holds everything the user creates: boxes, state and

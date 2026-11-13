@@ -1,6 +1,6 @@
 {
   "name": "red-dash",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Visual red team cockpit — terminal in the middle, your tools and output around you",
   "desktopName": "red-dash.desktop",
   "homepage": "https://github.com/HyperionFae/red-dash",
