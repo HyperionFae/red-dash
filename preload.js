@@ -9,12 +9,15 @@ const INVOKE = [
   'get-target', 'set-target',
   'list-workspaces', 'new-workspace', 'set-workspace', 'delete-workspace',
   'read-note', 'write-note',
+  'read-box', 'write-box', 'get-ports',
+  'append-log', 'read-log', 'delete-log-entry', 'clear-log',
+  'build-report', 'export-report',
   'list-output', 'read-output',
   'check-env', 'check-vpn', 'dismiss-tool', 'undismiss-tools',
   'copy-text', 'app-info'
 ]
-const SEND = ['term-ready', 'term-in', 'term-insert', 'term-resize']
-const LISTEN = ['term-out', 'output-changed']
+const SEND = ['term-open', 'term-close', 'term-reset', 'term-active', 'term-in', 'term-insert', 'term-resize']
+const LISTEN = ['term-out', 'term-exit', 'output-changed']
 
 contextBridge.exposeInMainWorld('api', {
   invoke: (ch, ...args) => {
